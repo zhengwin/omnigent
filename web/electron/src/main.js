@@ -16,6 +16,7 @@
 const {
   app,
   BrowserWindow,
+  WebContentsView,
   Menu,
   Notification,
   clipboard,
@@ -33,6 +34,8 @@ const { pathToFileURL } = require("node:url");
 const { registerLocalhostCors } = require("./localhost_cors");
 const { normalizeUrl, expandDatabricksWorkspaceUrl } = require("./url");
 const { registerWorkspaceChromeHide } = require("./workspace-chrome");
+const { createBrowserViewRegistry } = require("./browserViewRegistry");
+const { createBrowserViewBoundsController } = require("./browserViewBounds");
 const omnigentCli = require("./omnigent_cli");
 const serverManager = require("./server_manager");
 
@@ -426,6 +429,8 @@ function applyDockIcon() {
  *   so the OS badge aggregates per distinct ORIGIN (not per window — two
  *   windows on the same server report the same number and must not be
  *   double-counted), then sums across origins.
+ * @property {ReturnType<typeof createBrowserViewRegistry>} [browserRegistry]
+ *   Per-conversation embedded-browser (Phase 2) view registry for this window.
  *
  * @type {Map<BrowserWindow, WindowState>}
  */
@@ -892,6 +897,9 @@ function createWindow(targetUrl, opts = {}) {
     serverUrl: destination,
     ephemeral,
     badgeCount: 0,
+    // Per-conversation embedded-browser registry (Phase 2). Lazily populated
+    // WebContentsViews positioned over the SPA's placeholder <div>.
+    browserRegistry: createBrowserRegistryForWindow(win),
   });
   if (destination) {
     void win.loadURL(destination);
@@ -964,6 +972,13 @@ function createWindow(targetUrl, opts = {}) {
   // connect. Connecting is an explicit action from the host menu.
 
   win.on("closed", () => {
+    // Destroy any embedded-browser views this window owned before dropping its
+    // state — otherwise the detached WebContentsViews leak their webContents.
+    try {
+      windows.get(win)?.browserRegistry?.closeAll("window-closed");
+    } catch {
+      /* registry already torn down */
+    }
     windows.delete(win);
     updateBadge(); // drop this window's contribution from the app-wide badge
   });
@@ -1541,6 +1556,69 @@ function isPinnedOriginSender(event) {
   return originOf(event.sender.getURL()) === pinned;
 }
 
+// ---------------------------------------------------------------------------
+// Embedded browser pane (Phase 2)
+//
+// The agent's `browser_*` MCP tools drive a native WebContentsView per
+// conversation, positioned over a placeholder <div> the SPA measures. Each
+// shell window owns its own registry (multi-window: two windows can each show
+// their own browser pane). The registry keeps `nodeIntegration:false,
+// contextIsolation:true, sandbox:true` on every child view and detaches (does
+// NOT destroy) on hide so a background-conversation agent's page keeps running.
+//
+// Risk-4 trust boundary: `omnigent:browser-execute` runs arbitrary JS in the
+// child view via `executeJavaScript(js, true)`. It is exposed to the SPA
+// preload ONLY for the relay's own fixed templates (snapshot / click / type),
+// never as an agent-facing generic `evaluate`. See preload.js + README.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the per-conversation WebContentsView registry for a shell window. The
+ * registry positions child views inside `win.contentView` and reports lifecycle
+ * pings back to `win.webContents`.
+ *
+ * @param {BrowserWindow} win The shell window that hosts the browser panes.
+ * @returns {ReturnType<typeof createBrowserViewRegistry>}
+ */
+function createBrowserRegistryForWindow(win) {
+  return createBrowserViewRegistry({
+    WebContentsViewCtor: (opts) => new WebContentsView(opts),
+    createBoundsController: createBrowserViewBoundsController,
+    attachToHost: (view) => win.contentView.addChildView(view),
+    detachFromHost: (view) => win.contentView.removeChildView(view),
+    sendToRenderer: (channel, payload) => {
+      try {
+        win.webContents.send(channel, payload);
+      } catch {
+        /* window torn down */
+      }
+    },
+    // Renderer measures in CSS px; convert to window DIPs using the host
+    // webContents zoom factor (Cmd+/Cmd- changes this out from under us).
+    getHostZoomFactor: () => {
+      try {
+        return win.webContents.getZoomFactor();
+      } catch {
+        return 1;
+      }
+    },
+  });
+}
+
+/**
+ * Look up the browser-view registry for the window that sent an IPC event.
+ * Returns null for unknown windows (torn-down / setup-page senders) so the
+ * handler can surface a clean error instead of throwing.
+ *
+ * @param {Electron.IpcMainInvokeEvent} event
+ * @returns {ReturnType<typeof createBrowserViewRegistry> | null}
+ */
+function browserRegistryForSender(event) {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return null;
+  return windows.get(win)?.browserRegistry ?? null;
+}
+
 function registerIpc() {
   // Setup page → persist URL and navigate the SENDING window to it. We target
   // the window that owns the setup page (via its webContents) rather than a
@@ -1928,6 +2006,118 @@ function registerIpc() {
   // polling) — the server-management module owns the subprocess and reports
   // lifecycle changes here.
   serverManager.onChange(broadcastHostStatus);
+
+  registerBrowserIpc();
+}
+
+/**
+ * IPC surface for the embedded browser pane (Phase 2). Every handler is gated
+ * on `isPinnedOriginSender` — only the trusted server's own page may drive the
+ * browser views — and resolves the sender window's own registry, so one window
+ * can never manipulate another's panes.
+ *
+ * The channel names mirror the preload bridge (`omnigent:browser-*`) and the
+ * frozen relay contract: open-or-navigate, set-active, resize, screenshot,
+ * execute, close.
+ */
+function registerBrowserIpc() {
+  /**
+   * Resolve the sender's registry after the privileged-origin gate. Returns
+   * `{ registry }` on success or `{ error }` (a structured result, never a
+   * throw) so the relay surfaces a clean tool error.
+   */
+  const gateRegistry = (event) => {
+    if (!isPinnedOriginSender(event)) {
+      return { error: "browser IPC is only available to the connected server's page" };
+    }
+    const registry = browserRegistryForSender(event);
+    if (!registry) return { error: "no browser registry for this window" };
+    return { registry };
+  };
+
+  // Open (create-if-absent) or navigate a conversation's view, and measure it
+  // into place. `force` reloads even on the same URL (agent "bring me back"
+  // intent). Returns the registry's structured `{ ok, created, error }`.
+  ipcMain.handle("omnigent:browser-open-or-navigate", (event, args) => {
+    const g = gateRegistry(event);
+    if (g.error) return { ok: false, error: g.error };
+    const { conversationId, url, bounds, opts } = args ?? {};
+    if (typeof conversationId !== "string" || !conversationId) {
+      return { ok: false, error: "conversationId is required" };
+    }
+    const r = g.registry.openOrNavigate(conversationId, url, bounds, opts);
+    // Strip the non-serializable `entry` before it crosses the IPC boundary.
+    return { ok: r.ok, created: r.created ?? false, error: r.error };
+  });
+
+  // Attach the named conversation's view to the host window (detaching the
+  // previous active one), or detach everything when conversationId is null.
+  ipcMain.handle("omnigent:browser-set-active", (event, args) => {
+    const g = gateRegistry(event);
+    if (g.error) return { ok: false, error: g.error };
+    const conversationId = args?.conversationId ?? null;
+    const r = g.registry.setActive(conversationId);
+    return { ok: r.ok, error: r.error };
+  });
+
+  // Reposition the active conversation's view to freshly-measured bounds.
+  ipcMain.handle("omnigent:browser-resize", (event, args) => {
+    const g = gateRegistry(event);
+    if (g.error) return { ok: false, error: g.error };
+    const { conversationId, bounds } = args ?? {};
+    if (typeof conversationId !== "string" || !conversationId) {
+      return { ok: false, error: "conversationId is required" };
+    }
+    const entry = g.registry.get(conversationId);
+    if (!entry) return { ok: false, error: "No browser view" };
+    if (bounds) entry.boundsController.setRendererBounds(bounds);
+    return { ok: true };
+  });
+
+  // Capture the conversation's view as a base64 PNG.
+  ipcMain.handle("omnigent:browser-screenshot", async (event, args) => {
+    const g = gateRegistry(event);
+    if (g.error) return { ok: false, error: g.error };
+    const { conversationId } = args ?? {};
+    const entry = g.registry.get(conversationId);
+    if (!entry) return { ok: false, error: "No browser view" };
+    try {
+      const image = await entry.view.webContents.capturePage();
+      const dataUrl = `data:image/png;base64,${image.toPNG().toString("base64")}`;
+      return { ok: true, dataUrl };
+    } catch (e) {
+      return { ok: false, error: e && e.message ? e.message : String(e) };
+    }
+  });
+
+  // Run relay-template JS in the conversation's view. PRIVATE to the relay's
+  // fixed templates (snapshot / click / type) — NOT an agent-facing generic
+  // `evaluate` (Risk-4 trust boundary; see README).
+  ipcMain.handle("omnigent:browser-execute", async (event, args) => {
+    const g = gateRegistry(event);
+    if (g.error) return { ok: false, error: g.error };
+    const { conversationId, js } = args ?? {};
+    if (typeof js !== "string") return { ok: false, error: "js must be a string" };
+    const entry = g.registry.get(conversationId);
+    if (!entry) return { ok: false, error: "No browser view" };
+    try {
+      // `true` = user gesture, so the page can call gesture-gated APIs.
+      const result = await entry.view.webContents.executeJavaScript(js, true);
+      // Normalize to a string — the relay JSON.parses snapshot/upload results.
+      return { ok: true, result: typeof result === "string" ? result : JSON.stringify(result) };
+    } catch (e) {
+      return { ok: false, error: e && e.message ? e.message : String(e) };
+    }
+  });
+
+  // Destroy the conversation's view (explicit close — unmount only detaches).
+  ipcMain.handle("omnigent:browser-close", (event, args) => {
+    const g = gateRegistry(event);
+    if (g.error) return { ok: false, error: g.error };
+    const { conversationId, reason } = args ?? {};
+    const r = g.registry.close(conversationId, reason);
+    return { ok: r.ok, removed: r.removed ?? false };
+  });
 }
 
 // ---------------------------------------------------------------------------

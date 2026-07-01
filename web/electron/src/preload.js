@@ -104,6 +104,86 @@ contextBridge.exposeInMainWorld("omnigentDesktop", {
    * setup page, so a connected server can't repoint the CLI at an arbitrary one.
    */
   resetCliPath: () => ipcRenderer.invoke("omnigent:cli-reset-path"),
+
+  // ── Embedded browser pane (Phase 2) ────────────────────────────────────
+  // The browser relay hook (web/src/hooks/useBrowserAgentRelay.ts) drives a
+  // native WebContentsView per conversation through these. All args/results
+  // are plain serializable objects (they cross contextBridge's structured
+  // clone). Deliberately NO generic agent-facing `evaluate`/`executeJavaScript`
+  // is exposed: `browserExecute` runs relay templates only (Risk-4 trust
+  // boundary — see main.js registerBrowserIpc + web/electron/README.md).
+
+  /**
+   * Open (create-if-absent) or navigate a conversation's browser view, and
+   * measure it into place. `opts.force` reloads even on the same URL.
+   * @param {string} conversationId
+   * @param {string} url
+   * @param {{x:number,y:number,width:number,height:number,devicePixelRatio?:number}} [bounds]
+   * @param {{force?: boolean}} [opts]
+   */
+  browserOpenOrNavigate: (conversationId, url, bounds, opts) =>
+    ipcRenderer.invoke("omnigent:browser-open-or-navigate", { conversationId, url, bounds, opts }),
+  /**
+   * Attach a conversation's view to the host window (detaching the previous
+   * active one). Pass null to detach everything (no pane mounted).
+   * @param {string | null} conversationId
+   */
+  browserSetActive: (conversationId) =>
+    ipcRenderer.invoke("omnigent:browser-set-active", { conversationId }),
+  /**
+   * Reposition the conversation's view to freshly-measured placeholder bounds.
+   * @param {string} conversationId
+   * @param {{x:number,y:number,width:number,height:number,devicePixelRatio?:number}} bounds
+   */
+  browserResize: (conversationId, bounds) =>
+    ipcRenderer.invoke("omnigent:browser-resize", { conversationId, bounds }),
+  /**
+   * Capture the conversation's view as a base64 PNG data URL.
+   * @param {string} conversationId
+   * @returns {Promise<{ ok: boolean, dataUrl?: string, error?: string }>}
+   */
+  browserScreenshot: (conversationId) =>
+    ipcRenderer.invoke("omnigent:browser-screenshot", { conversationId }),
+  /**
+   * Run a relay-template JS string in the conversation's view. PRIVATE to the
+   * relay's fixed templates (snapshot / click / type) — never an agent-facing
+   * generic evaluate.
+   * @param {string} conversationId
+   * @param {string} js
+   * @returns {Promise<{ ok: boolean, result?: string, error?: string }>}
+   */
+  browserExecute: (conversationId, js) =>
+    ipcRenderer.invoke("omnigent:browser-execute", { conversationId, js }),
+  /**
+   * Destroy the conversation's view (explicit close — unmount only detaches).
+   * @param {string} conversationId
+   * @param {string} [reason]
+   */
+  browserClose: (conversationId, reason) =>
+    ipcRenderer.invoke("omnigent:browser-close", { conversationId, reason }),
+  /**
+   * Subscribe to which conversation's browser view is currently attached to the
+   * host window (`{conversationId}` or `{conversationId: null}` when detached).
+   * The registry fires this on every attach/detach. Returns an unsubscribe.
+   * @param {(payload: { conversationId: string | null }) => void} callback
+   * @returns {() => void}
+   */
+  onBrowserHostActiveChanged: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("browser-host-active-changed", listener);
+    return () => ipcRenderer.removeListener("browser-host-active-changed", listener);
+  },
+  /**
+   * Subscribe to browser-view close events (`{conversationId, reason}`) so the
+   * SPA can drop the pane when the view is destroyed. Returns an unsubscribe.
+   * @param {(payload: { conversationId: string, reason: string | null }) => void} callback
+   * @returns {() => void}
+   */
+  onBrowserViewClosed: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("browser-view-closed", listener);
+    return () => ipcRenderer.removeListener("browser-view-closed", listener);
+  },
 });
 
 // Setup-page bridge: persist + navigate to a server URL, and read the saved
