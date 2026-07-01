@@ -53,9 +53,13 @@ interface BrowserPaneBridge {
   onBrowserHostActiveChanged?: (
     callback: (payload: { conversationId: string | null }) => void,
   ) => () => void;
+  onBrowserViewCreated?: (
+    callback: (payload: { conversationId: string }) => void,
+  ) => () => void;
   onBrowserViewClosed?: (
     callback: (payload: { conversationId: string; reason: string | null }) => void,
   ) => () => void;
+  browserHasView?: (conversationId: string) => Promise<{ exists: boolean }>;
 }
 
 function getBridge(): BrowserPaneBridge | null {
@@ -90,19 +94,44 @@ export function BrowserPane({ conversationId, className }: BrowserPaneProps) {
   // listening before `viewActive` ever flips true.
   useBrowserAgentRelay(conversationId);
 
-  // Track attach/detach + close so the placeholder mounts only when a view
-  // exists for this conversation.
+  // Decide when a view EXISTS for this conversation, so the placeholder mounts
+  // exactly then. Three signals feed `viewActive`:
+  //   1. `browser-view-created` — the FIRST navigate creates the view (often
+  //      detached, so no host-active event fires); this is the signal that
+  //      breaks the original activation deadlock.
+  //   2. `browserHasView` probe on (re)mount — the user navigated away and
+  //      back, and the view already exists in the registry.
+  //   3. `browser-host-active-changed` — a later attach/detach for this
+  //      conversation keeps the flag honest (detach for another conversation
+  //      flips it false).
+  // `browser-view-closed` for this conversation flips it false.
   useEffect(() => {
     if (!electron) return;
     const bridge = getBridge();
     if (!bridge) return;
+    let cancelled = false;
+
+    // (2) Re-show an already-created view when the pane remounts.
+    void bridge.browserHasView?.(conversationId).then((r) => {
+      if (!cancelled && r?.exists) setViewActive(true);
+    });
+
+    // (1) A view was just created for this conversation (first navigate).
+    const unsubCreated = bridge.onBrowserViewCreated?.((payload) => {
+      if (payload.conversationId === conversationId) setViewActive(true);
+    });
+    // (3) Attach/detach transitions. An attach for another conversation, or a
+    // detach (null), means this pane's view is no longer the visible one.
     const unsubActive = bridge.onBrowserHostActiveChanged?.((payload) => {
-      setViewActive(payload.conversationId === conversationId);
+      if (payload.conversationId === conversationId) setViewActive(true);
+      else if (payload.conversationId === null) setViewActive(false);
     });
     const unsubClosed = bridge.onBrowserViewClosed?.((payload) => {
       if (payload.conversationId === conversationId) setViewActive(false);
     });
     return () => {
+      cancelled = true;
+      unsubCreated?.();
       unsubActive?.();
       unsubClosed?.();
     };

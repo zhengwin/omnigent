@@ -106,6 +106,17 @@ function createBrowserViewRegistry({
         /* host gone */
       }
     }
+    // Tell the renderer a view now EXISTS for this conversation. Critical for
+    // the FIRST navigate: the view is created detached (activeConversationId is
+    // null on a fresh conversation), so no `browser-host-active-changed` fires
+    // — without this signal the React pane never learns a view exists, never
+    // mounts its placeholder, and never calls setActive to attach it (the pane
+    // would stay invisible). The pane reacts by mounting the measuring
+    // placeholder and calling setActive(conversationId), which attaches +
+    // starts bounds sync.
+    if (created) {
+      sendToRenderer('browser-view-created', { conversationId });
+    }
     if (url) {
       // Compare against the LAST URL we explicitly requested, not
       // webContents.getURL(). The currently-loaded URL drifts as the user/agent

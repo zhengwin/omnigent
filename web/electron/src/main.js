@@ -2110,6 +2110,15 @@ function registerBrowserIpc() {
     }
   });
 
+  // Whether a view currently exists for a conversation. Lets a (re)mounting
+  // pane re-attach an already-created view without waiting for a create event.
+  ipcMain.handle("omnigent:browser-has-view", (event, args) => {
+    const g = gateRegistry(event);
+    if (g.error) return { exists: false };
+    const { conversationId } = args ?? {};
+    return { exists: typeof conversationId === "string" && g.registry.has(conversationId) };
+  });
+
   // Destroy the conversation's view (explicit close — unmount only detaches).
   ipcMain.handle("omnigent:browser-close", (event, args) => {
     const g = gateRegistry(event);

@@ -174,6 +174,31 @@ contextBridge.exposeInMainWorld("omnigentDesktop", {
     return () => ipcRenderer.removeListener("browser-host-active-changed", listener);
   },
   /**
+   * Subscribe to browser-view CREATION (`{conversationId}`), fired by the
+   * registry the first time `openOrNavigate` creates a view for a conversation
+   * — including when it's created detached (fresh conversation). This is what
+   * lets the SPA learn a view exists and mount its measuring placeholder +
+   * attach it; without it the first `browser_navigate` produces a detached,
+   * invisible view. Returns an unsubscribe.
+   * @param {(payload: { conversationId: string }) => void} callback
+   * @returns {() => void}
+   */
+  onBrowserViewCreated: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("browser-view-created", listener);
+    return () => ipcRenderer.removeListener("browser-view-created", listener);
+  },
+  /**
+   * Whether a browser view currently exists for a conversation. Lets a pane
+   * that (re)mounts after the view was already created — e.g. the user
+   * navigated away and back — re-show and re-attach it without waiting for a
+   * fresh create event.
+   * @param {string} conversationId
+   * @returns {Promise<{ exists: boolean }>}
+   */
+  browserHasView: (conversationId) =>
+    ipcRenderer.invoke("omnigent:browser-has-view", { conversationId }),
+  /**
    * Subscribe to browser-view close events (`{conversationId, reason}`) so the
    * SPA can drop the pane when the view is destroyed. Returns an unsubscribe.
    * @param {(payload: { conversationId: string, reason: string | null }) => void} callback

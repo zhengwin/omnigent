@@ -182,8 +182,9 @@ the SPA measures — not an in-page element.
   own page may drive the views) and resolves the *sender window's own* registry,
   so one window can never manipulate another's panes.
 - `src/preload.js` — adds `browserOpenOrNavigate/SetActive/Resize/Screenshot/`
-  `Execute/Close` (+ the `onBrowserHostActiveChanged` / `onBrowserViewClosed`
-  subscriptions) to `window.omnigentDesktop`, each a thin `ipcRenderer.invoke`.
+  `Execute/Close` + `browserHasView` (+ the `onBrowserViewCreated` /
+  `onBrowserHostActiveChanged` / `onBrowserViewClosed` subscriptions) to
+  `window.omnigentDesktop`, each a thin `ipcRenderer.invoke`.
 - Renderer side (in `web/src`): `hooks/useBrowserAgentRelay.ts` receives the
   `browser.action_request` SSE event, **claims** the action on the server
   (atomic check-and-set so two windows on one server can't double-execute),
@@ -192,6 +193,16 @@ the SPA measures — not an in-page element.
   keeps the native view positioned over it. Both self-gate on
   `isElectronShell()`, so a plain browser tab is inert (the action times out on
   the server with a clean "is the desktop app open?" error).
+
+**First-navigate activation.** The first `browser_navigate` on a conversation
+creates the view **detached** (nothing is active yet), so no
+`browser-host-active-changed` fires. The registry therefore also emits a
+`browser-view-created` event on create; `BrowserPane` listens for it (and
+probes `browserHasView` on remount), mounts its measuring placeholder, and
+calls `browserSetActive(conversationId)` — which attaches the view and starts
+bounds sync. Without this signal the pane would gate itself off forever and the
+embedded browser would stay invisible. (`browserViewRegistry.test.js` locks the
+create-signal → setActive → attached transition.)
 
 **Risk-4 — JS trust boundary (important):** `omnigent:browser-execute` runs
 arbitrary JS in the child view via `executeJavaScript(js, true)`. It is exposed
@@ -203,6 +214,12 @@ string that main will run. (It does not, and is not intended to, defend against
 XSS *within* the visited page — that page runs its own scripts in its own
 sandboxed view regardless.) Preserve this when extending the bridge: add typed,
 argument-shaped actions, not a passthrough JS channel.
+
+**Feature flag.** The agent-side `browser_*` tools are gated by the
+`OMNIGENT_BROWSER_TOOLS` env var, which the AP/runner reads **at process
+start** — toggling it needs an AP/runner restart to take effect (a live SIGHUP
+won't pick it up). Zero-diff default: unset means the tools aren't registered
+and this shell machinery simply never receives a `browser.action_request`.
 
 ## Prerequisites
 
