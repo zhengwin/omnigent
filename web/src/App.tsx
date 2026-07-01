@@ -29,6 +29,15 @@ const InboxPage = lazy(() => import("@/pages/InboxPage").then((m) => ({ default:
 const SettingsPage = lazy(() =>
   import("@/pages/SettingsPage").then((m) => ({ default: m.SettingsPage })),
 );
+// Functional-projects pages: lazy-loaded and only registered when
+// `functional_projects_enabled` is set (see the route table below), so a
+// flag-off deploy never downloads them and the routes 404.
+const ProjectsPage = lazy(() =>
+  import("@/pages/ProjectsPage").then((m) => ({ default: m.ProjectsPage })),
+);
+const ProjectDetailPage = lazy(() =>
+  import("@/pages/ProjectDetailPage").then((m) => ({ default: m.ProjectDetailPage })),
+);
 
 interface AppProps {
   /**
@@ -134,6 +143,12 @@ function App({ basename }: AppProps = {}) {
             <>
               <Route path={`${prefix}/members`} element={<MembersPage />} />
               <Route path={`${prefix}/policies`} element={<PoliciesPage />} />
+            </>
+          )}
+          {info.functional_projects_enabled && (
+            <>
+              <Route path={`${prefix}/projects`} element={<ProjectsPage />} />
+              <Route path={`${prefix}/projects/:projectName`} element={<ProjectDetailPage />} />
             </>
           )}
           <Route path={basename ? `${prefix}/*` : "*"} element={<NotFoundPage />} />

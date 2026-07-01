@@ -68,6 +68,15 @@ export interface ServerInfo {
    * (``OMNIGENT_SMART_ROUTING=1`` + ``llm:`` config). Hidden by default.
    */
   smart_routing_enabled: boolean;
+  /**
+   * True when functional projects are enabled
+   * (``OMNIGENT_FUNCTIONAL_PROJECTS=1``). Gates the Projects nav entry,
+   * the ``/projects`` + ``/projects/:projectName`` routes, and the
+   * per-project description ("Project instructions") editor. Off ⇒ the
+   * existing UI is byte-identical: the nav entry isn't rendered and the
+   * routes are not registered.
+   */
+  functional_projects_enabled: boolean;
 }
 
 /** Sentinel used when the probe fails — accounts is off, no login URL. */
@@ -80,6 +89,7 @@ const _OFF: ServerInfo = {
   sandbox_provider: null,
   server_version: null,
   smart_routing_enabled: false,
+  functional_projects_enabled: false,
 };
 
 let _cached: ServerInfo | null = null;
@@ -114,6 +124,7 @@ export async function resolveServerInfo(): Promise<ServerInfo> {
             typeof data.sandbox_provider === "string" ? data.sandbox_provider : null,
           server_version: typeof data.server_version === "string" ? data.server_version : null,
           smart_routing_enabled: data.smart_routing_enabled === true,
+          functional_projects_enabled: data.functional_projects_enabled === true,
         };
         return _cached;
       }
