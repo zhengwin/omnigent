@@ -304,7 +304,7 @@ _AGENT_TOOLS = frozenset({"sys_agent_get", "sys_agent_download", "sys_agent_list
 # The runner proxies the Omnigent server's session policy REST endpoint.
 _POLICY_TOOLS = frozenset({"sys_add_policy", "sys_policy_registry"})
 
-# Priority 5m: Embedded-browser tools — flag-gated (OMNIGENT_BROWSER_TOOLS).
+# Priority 5m: Embedded-browser tools.
 # Runner dispatch POSTs a blocking action request to the AP, which parks a
 # Future + publishes ``browser.action_request`` on the session stream; the
 # Omnigent desktop renderer claims and executes the action, then POSTs the
@@ -366,10 +366,9 @@ _NATIVE_RELAY_BUILTIN_TOOLS = (
     # ``browser_*`` must ride the native relay: the Omnigent desktop app
     # runs native (claude/codex/pi) sessions, which ignore ``request.tools``
     # and see ONLY this relay surface — without this union member the
-    # feature is dead for its real target. Zero-diff default is preserved
-    # because the relay filters ``ToolManager(spec).get_tool_schemas()``,
-    # which emits browser schemas only when ``OMNIGENT_BROWSER_TOOLS`` is
-    # truthy AND the spec declares the builtins (see builtins/__init__.py).
+    # feature is dead for its real target. The relay still filters
+    # ``ToolManager(spec).get_tool_schemas()``, so browser schemas appear
+    # only when the spec declares the builtins (see builtins/__init__.py).
     | _BROWSER_TOOLS
 )
 
