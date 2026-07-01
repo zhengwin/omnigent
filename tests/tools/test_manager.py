@@ -439,7 +439,9 @@ def test_create_toplevel_sessions_registers_above_spawn_early_return() -> None:
 
     This pins the exact regression shape: registration must happen before
     the spawn/tools.agents early return, because the top-level grant is not
-    child-spawn authority.
+    child-spawn authority. The tool name is also reserved in
+    ``BUILTIN_NAMES``, but that reservation must NOT auto-register it when
+    the grant is false.
     """
     granted = AgentSpec(spec_version=1, create_toplevel_sessions=True, spawn=False)
     granted_names = {s["function"]["name"] for s in ToolManager(granted).get_tool_schemas()}

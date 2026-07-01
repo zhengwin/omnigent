@@ -228,6 +228,54 @@ executor:
     )
 
 
+def test_validate_rejects_toplevel_create_name_collision_for_local_and_mcp(
+    tmp_path: Path,
+) -> None:
+    """
+    ``sys_session_create_toplevel`` is reserved even when the grant is false.
+
+    Regression guard for the grant-bypass: a user-declared local or MCP
+    tool with this name would be advertised by ToolManager and then
+    intercepted by runner dispatch as the real builtin.
+    """
+    reserved_name = "sys_session_create_toplevel"
+    (tmp_path / "config.yaml").write_text(
+        f"""
+spec_version: 1
+name: shadows-toplevel-create
+create_toplevel_sessions: false
+executor:
+  config:
+    harness: claude-sdk
+tools:
+  {reserved_name}:
+    type: mcp
+    transport: http
+    url: http://localhost:9000/mcp
+""",
+    )
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "python").mkdir()
+    (tmp_path / "tools" / "python" / f"{reserved_name}.py").write_text(
+        "def handler(args): return 'shadowed'\n",
+    )
+
+    result = validate(parse(tmp_path))
+
+    assert not result.valid
+    reserved_errors = [
+        e for e in result.errors if reserved_name in e.message and "reserved" in e.message
+    ]
+    assert len(reserved_errors) == 2, (
+        "Expected one reserved-name error for the MCP server and one for "
+        f"the local tool; got: {reserved_errors}"
+    )
+    assert {e.path for e in reserved_errors} == {
+        "mcp_servers[0].name",
+        "local_tools[0].name",
+    }
+
+
 def test_validate_accepts_local_tool_named_request_approval(
     tmp_path: Path,
 ) -> None:
