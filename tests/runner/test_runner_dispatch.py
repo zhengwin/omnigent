@@ -5477,14 +5477,15 @@ def test_native_relay_advertises_terminal_tools_per_spec_gate(
 
 def test_session_create_is_runner_local() -> None:
     """
-    ``sys_session_create`` dispatches locally in the runner. If it
+    Session-create tools dispatch locally in the runner. If create
     regresses out of the local table, a native harness calling it falls
     through to spec-callable resolution and the orchestrator can't spawn
-    child sessions.
+    child or independent sessions.
     """
     from omnigent.runner.tool_dispatch import should_dispatch_locally
 
     assert should_dispatch_locally("sys_session_create") is True
+    assert should_dispatch_locally("sys_session_create_toplevel") is True
 
 
 @pytest.mark.asyncio
@@ -5941,13 +5942,85 @@ async def test_sys_session_create_spawns_child_under_caller() -> None:
     # Child-only: parent forced to the caller; agent + title + queued
     # message threaded through to the create body.
     assert captured["parent_session_id"] == "conv_caller"
+    assert "runner_affinity_id" not in captured
     assert captured["agent_id"] == "ag_x"
     assert captured["title"] == "auth"
     assert captured["initial_items"][0]["data"]["content"][0]["text"] == "start"
     handle = json.loads(output)
     assert handle["conversation_id"] == "conv_child"
+    assert handle["kind"] == "sub_agent"
     assert handle["agent_id"] == "ag_x"
     assert handle["agent_name"] == "researcher"
+
+
+@pytest.mark.asyncio
+async def test_sys_session_create_toplevel_posts_affinity_without_parent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    ``sys_session_create_toplevel`` POSTs a JSON create without a
+    ``parent_session_id`` and pins the new top-level session to this
+    runner via ``runner_affinity_id``.
+
+    The returned handle is session-shaped, not child-shaped: no child
+    registration and no child ``session.created`` event.
+    """
+    from omnigent.runner import app as runner_app
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    monkeypatch.setenv("OMNIGENT_RUNNER_ID", "runner_test")
+    registered_children: list[tuple[Any, ...]] = []
+    published_events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        runner_app,
+        "register_child_session",
+        lambda *args, **_kwargs: registered_children.append(args),
+    )
+    captured: dict[str, Any] = {}
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/sessions":
+            captured.update(json.loads(request.content))
+            return httpx.Response(
+                201,
+                json={
+                    "id": "conv_top",
+                    "agent_id": "ag_x",
+                    "agent_name": "researcher",
+                    "status": "idle",
+                },
+            )
+        return httpx.Response(404, json={"error": str(request.url)})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_create_toplevel",
+            arguments=json.dumps({"agent_id": "ag_x", "title": "auth", "message": "start"}),
+            server_client=server_client,
+            conversation_id="conv_caller",
+            publish_event=lambda cid, event: published_events.append((cid, event)),
+        )
+
+    assert "parent_session_id" not in captured
+    assert captured["runner_affinity_id"] == "runner_test"
+    assert captured["agent_id"] == "ag_x"
+    assert captured["title"] == "auth"
+    assert captured["initial_items"][0]["data"]["content"][0]["text"] == "start"
+
+    handle = json.loads(output)
+    assert handle == {
+        "conversation_id": "conv_top",
+        "kind": "session",
+        "agent_id": "ag_x",
+        "agent_name": "researcher",
+        "title": "auth",
+        "status": "idle",
+    }
+    assert registered_children == []
+    assert published_events == []
 
 
 @pytest.mark.asyncio
@@ -6102,6 +6175,71 @@ async def test_sys_session_create_bundle_mode_uploads_child_under_caller(
     # not the caller's args — the orchestrator needs the NEW agent's id.
     assert handle["agent_id"] == "ag_new"
     assert handle["agent_name"] == "helper"
+
+
+@pytest.mark.asyncio
+async def test_sys_session_create_toplevel_bundle_mode_uses_runner_affinity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Top-level bundle mode uploads multipart metadata without a parent and
+    with this runner's affinity id, mirroring JSON mode while preserving
+    title handling.
+    """
+    from omnigent.runner import app as runner_app
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    monkeypatch.setenv("OMNIGENT_RUNNER_ID", "runner_test")
+    registered_children: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(
+        runner_app,
+        "register_child_session",
+        lambda *args, **_kwargs: registered_children.append(args),
+    )
+    (tmp_path / "helper.yaml").write_text("name: helper\nprompt: do helpful things\n")
+
+    create_requests: list[httpx.Request] = []
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/sessions":
+            create_requests.append(request)
+            return httpx.Response(
+                201,
+                json={
+                    "session_id": "conv_top",
+                    "agent_id": "ag_new",
+                    "agent_name": "helper",
+                },
+            )
+        return httpx.Response(404, json={"error": str(request.url)})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_create_toplevel",
+            arguments=json.dumps({"config_path": "helper.yaml", "title": "auth"}),
+            server_client=server_client,
+            conversation_id="conv_caller",
+            runner_workspace=tmp_path,
+        )
+
+    assert len(create_requests) == 1
+    parts = _parse_multipart_create(create_requests[0])
+    assert parts["metadata"] == {"runner_affinity_id": "runner_test", "title": "auth"}
+
+    handle = json.loads(output)
+    assert handle == {
+        "conversation_id": "conv_top",
+        "kind": "session",
+        "agent_id": "ag_new",
+        "agent_name": "helper",
+        "title": "auth",
+        "status": "created",
+    }
+    assert registered_children == []
 
 
 @pytest.mark.asyncio
