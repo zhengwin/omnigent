@@ -304,6 +304,38 @@ _AGENT_TOOLS = frozenset({"sys_agent_get", "sys_agent_download", "sys_agent_list
 # The runner proxies the Omnigent server's session policy REST endpoint.
 _POLICY_TOOLS = frozenset({"sys_add_policy", "sys_policy_registry"})
 
+# Priority 5m: Embedded-browser tools — flag-gated (OMNIGENT_BROWSER_TOOLS).
+# Runner dispatch POSTs a blocking action request to the AP, which parks a
+# Future + publishes ``browser.action_request`` on the session stream; the
+# Omnigent desktop renderer claims and executes the action, then POSTs the
+# result back. Execution lives HERE (not in Tool.invoke) because the browser
+# protocol needs the runner's ``server_client`` and ``ToolContext`` carries
+# none. See omnigent/tools/builtins/browser.py for the schema-only classes.
+_BROWSER_TOOLS = frozenset(
+    {
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_screenshot",
+    }
+)
+
+# Runner-side outer HTTP read timeout for a browser action POST. The read
+# budget (60s) MUST exceed the AP-side browser-action await (30s) so the
+# runner never severs the still-open POST before the AP returns either the
+# action result JSON or the clean timeout-error JSON (design Risk-4 "timeout
+# budget"). Fast connect (30s) so an unreachable server still fails promptly.
+_BROWSER_ACTION_TIMEOUT = httpx.Timeout(60.0, connect=30.0)
+
+# Returned as the tool output (HTTP 200 body, not an exception) when the AP
+# browser-action await elapses with no renderer result — mirrors SP2K's
+# "is the session open?" message so the LLM gets a clean, actionable error.
+_BROWSER_TIMEOUT_ERROR = (
+    '{"error": "browser action timed out — is the session open in the '
+    'Omnigent desktop app?"}'
+)
+
 # Builtin tools the claude-native / codex-native relay advertises to the
 # real CLI, beyond the always-relayed ``sys_os_*`` family. Native harnesses
 # ignore the harness ``tools`` list, so the relay is their ONLY tool
@@ -2559,6 +2591,66 @@ async def _execute_comment_tool(
         return json.dumps({"error": f"update_comment failed: {exc}"})
 
 
+async def _execute_browser_tool(
+    tool_name: str,
+    args: dict[str, Any],
+    *,
+    server_client: httpx.AsyncClient | None,
+    conversation_id: str | None,
+) -> str:
+    """
+    Runner-local handler for the ``browser_*`` embedded-browser tools.
+
+    Does the blocking round-trip that drives the Omnigent desktop app's
+    embedded browser: POST ``/v1/sessions/{conversation_id}/browser/
+    action_request`` with ``{action, args}`` (where ``action`` is the
+    tool name minus the ``browser_`` prefix) and return the AP's JSON
+    response verbatim as the tool output. The AP parks a Future,
+    publishes ``browser.action_request`` on the session stream, and
+    resolves the Future when the winning renderer POSTs the action
+    result — so this POST stays open until the action completes or the
+    AP's 30s browser-action await elapses.
+
+    Mirrors the ask-gate ``server_client.post`` pattern in
+    ``_execute_subagent_tool`` (with a much shorter read budget — see
+    ``_BROWSER_ACTION_TIMEOUT``). On the runner-side read timeout
+    (should not fire before the AP returns its own clean timeout JSON,
+    since read(60) > AP await(30)), returns the same timeout-error JSON
+    so the LLM always sees a clean tool error rather than an exception.
+
+    :param tool_name: The browser tool name, e.g. ``"browser_navigate"``.
+    :param args: Parsed tool arguments from the LLM, e.g.
+        ``{"url": "https://example.com"}``.
+    :param server_client: HTTP client pointed at the Omnigent server.
+    :param conversation_id: Current session id, e.g. ``"conv_abc123"``.
+    :returns: The AP action-result JSON string, or a timeout/error JSON.
+    """
+    if server_client is None:
+        return json.dumps({"error": f"{tool_name} requires server access"})
+    if conversation_id is None:
+        return json.dumps({"error": f"{tool_name} requires a session id"})
+
+    # Strip the ``browser_`` prefix so the wire ``action`` matches the
+    # frozen contract (navigate / snapshot / click / type / screenshot).
+    action = tool_name[len("browser_") :]
+    try:
+        resp = await server_client.post(
+            f"/v1/sessions/{conversation_id}/browser/action_request",
+            json={"action": action, "args": args},
+            timeout=_BROWSER_ACTION_TIMEOUT,
+        )
+    except httpx.ReadTimeout:
+        # The AP should return its own clean timeout JSON well before this
+        # fires (read(60) > AP await(30)); this is the belt-and-suspenders
+        # path if the AP itself stalls.
+        return _BROWSER_TIMEOUT_ERROR
+    except httpx.HTTPError as exc:
+        return json.dumps({"error": f"{tool_name} failed: {type(exc).__name__}: {exc}"})
+    if resp.status_code >= 400:
+        return json.dumps({"error": f"{tool_name} returned {resp.status_code}: {resp.text[:200]}"})
+    return resp.text
+
+
 async def _execute_policy_tool(
     tool_name: str,
     arguments: str,
@@ -4177,6 +4269,13 @@ async def execute_tool(
                 arguments,
                 conversation_id=conversation_id,
                 server_client=server_client,
+            )
+        elif tool_name in _BROWSER_TOOLS:
+            output = await _execute_browser_tool(
+                tool_name,
+                args,
+                server_client=server_client,
+                conversation_id=conversation_id,
             )
         elif _is_spec_local_python_tool(tool_name, agent_spec):
             output = await _execute_local_python_tool(
