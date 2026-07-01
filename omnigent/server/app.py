@@ -1821,6 +1821,15 @@ def create_app(
             )
         except ImportError:
             smart_routing_enabled = False
+        # functional_projects_enabled gates the web UI's projects
+        # description editor + injection-aware chrome. Computed from the
+        # OMNIGENT_FUNCTIONAL_PROJECTS env var so the SPA never renders
+        # the editor (and the feature stays byte-identical to today) when
+        # the flag is off. Field name is the agreed frontend contract.
+        from omnigent.server.functional_projects import (
+            functional_projects_enabled as _functional_projects_enabled,
+        )
+
         return {
             "accounts_enabled": accounts_enabled,
             "login_url": login_url,
@@ -1830,6 +1839,7 @@ def create_app(
             "sandbox_provider": sandbox_provider,
             "server_version": _server_version(),
             "smart_routing_enabled": smart_routing_enabled,
+            "functional_projects_enabled": _functional_projects_enabled(),
         }
 
     @app.get("/v1/me", response_model=None)  # Union return type (dict | JSONResponse)

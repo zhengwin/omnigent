@@ -155,6 +155,10 @@ from omnigent.server.auth import (
     local_single_user_enabled,
 )
 from omnigent.server.bundles import bundle_location, validate_agent_bundle
+from omnigent.server.functional_projects import (
+    functional_projects_enabled,
+    render_project_instructions,
+)
 from omnigent.server.host_registry import HostConnection, HostRegistry, RunnerExitReports
 from omnigent.server.managed_hosts import (
     ManagedHostLaunch,
@@ -214,6 +218,8 @@ from omnigent.server.schemas import (
     PaginatedList,
     PermissionObject,
     PolicySummary,
+    ProjectDetailResponse,
+    ProjectUpdateRequest,
     ReadStatePutRequest,
     ReasoningStartedEvent,
     ReasoningTextDeltaEvent,
@@ -7590,6 +7596,16 @@ async def _forward_native_terminal_message(
     state, and their forwarders later post that terminal-originated
     item back through ``external_conversation_item``.
 
+    NOTE — functional-projects prompt injection is intentionally NOT
+    wired on this native-terminal path. The ``<project_instructions>``
+    block is only injected on the SDK/gateway harness path
+    (``_forward_event_to_runner`` → ``per_request_instructions`` →
+    ``build_instructions``). Native terminals own their own system
+    prompt inside the external CLI (Claude Code / Codex) and have no
+    equivalent per-turn instructions seam here, so project descriptions
+    do not reach native-terminal sessions in this feature's first cut.
+    Known scope boundary, not an oversight.
+
     :param runner_client: Runner client selected for ``session_id``.
     :param session_id: Session/conversation identifier, e.g.
         ``"conv_abc123"``.
@@ -8691,6 +8707,29 @@ async def _forward_event_to_runner(
     # per-event value exists; the persisted column is the source.
     if conv.harness_override is not None:
         runner_body["harness_override"] = conv.harness_override
+
+    # ── Functional projects: per-project standing instructions ────────
+    # When the feature is on and this session is filed under a project
+    # that has a non-empty description, append that description (wrapped
+    # in a <project_instructions> block) to per_request_instructions. The
+    # runner threads per_request_instructions into build_instructions
+    # (app.py), which the SDK/gateway harnesses turn into the turn's
+    # system prompt. Appended (not clobbered) so any pre-existing value
+    # survives. ZERO-DIFF INVARIANT: flag off, no project label, no
+    # projects row, or an empty/whitespace description ⇒ the field is
+    # never set ⇒ runner_body is byte-identical to today. Only user
+    # messages carry instructions; other event types are untouched.
+    if functional_projects_enabled() and body.type == "message":
+        _proj = conv.labels.get(PROJECT_LABEL_KEY)
+        if _proj:
+            _proj_rec = await asyncio.to_thread(conversation_store.get_project, _proj)
+            if _proj_rec is not None and _proj_rec.description and _proj_rec.description.strip():
+                _block = render_project_instructions(_proj_rec.description.strip())
+                _existing = runner_body.get("per_request_instructions")
+                runner_body["per_request_instructions"] = (
+                    f"{_existing}\n\n{_block}" if _existing else _block
+                )
+    # ──────────────────────────────────────────────────────────────────
 
     # The runner's sessions-native POST returns 202 immediately
     # and starts the turn as a background task. No streaming
@@ -14081,20 +14120,150 @@ def create_sessions_router(
     )
     async def list_session_projects(
         request: Request,
-    ) -> list[str]:
+        detail: bool = Query(default=False),
+    ) -> list[str] | list[ProjectDetailResponse]:
         """
-        Return all project names for the authenticated user, ordered
+        Return all projects for the authenticated user, ordered
         alphabetically.
 
         Projects are implicit: they exist while at least one session
         has a ``conversation_labels`` row with ``key="omni_project"``.
+        With ``detail=true`` the response is the *union* of implicit
+        label-only projects and explicit ``projects`` metadata rows, each
+        carrying description/icon + a member-session count.
 
-        :returns: List of project names.
+        :param detail: When ``False`` (default), return the legacy
+            ``list[str]`` of names — unchanged shape, so existing callers
+            (sidebar folders) keep working. When ``True``, return
+            :class:`ProjectDetailResponse` objects.
+        :returns: A list of names, or a list of detail objects.
         """
         user_id = _require_user(request, auth_provider)
-        return await asyncio.to_thread(
-            conversation_store.list_projects,
+        if not detail:
+            return await asyncio.to_thread(
+                conversation_store.list_projects,
+                accessible_by=user_id,
+            )
+        rows = await asyncio.to_thread(
+            conversation_store.list_projects_detailed,
             accessible_by=user_id,
+        )
+        return [
+            ProjectDetailResponse(
+                name=r.name,
+                description=r.description,
+                icon=r.icon,
+                session_count=r.session_count,
+            )
+            for r in rows
+        ]
+
+    # ── GET /sessions/projects/{name} ─────────────────────────────
+    #
+    # Registered before ``/sessions/{session_id}`` for the same reason as
+    # ``/sessions/projects`` above — FastAPI matches in registration order.
+
+    @router.get(
+        "/sessions/projects/{name}",
+        response_model=None,
+    )
+    async def get_session_project(
+        request: Request,
+        name: str,
+    ) -> ProjectDetailResponse:
+        """
+        Return one project's details, including its description.
+
+        Resolves against the same ACL-filtered union as the detailed
+        list: a project is visible if the caller can access at least one
+        of its member sessions, OR it exists as an explicit ``projects``
+        row. Returns ``404`` when neither holds.
+
+        :param request: The incoming FastAPI request (for auth).
+        :param name: The project name, e.g. ``"my-project"``.
+        :returns: The matching :class:`ProjectDetailResponse`.
+        :raises OmnigentError: 404 if the project is not visible.
+        """
+        user_id = _require_user(request, auth_provider)
+        rows = await asyncio.to_thread(
+            conversation_store.list_projects_detailed,
+            accessible_by=user_id,
+        )
+        match = next((r for r in rows if r.name == name), None)
+        if match is None:
+            raise OmnigentError(
+                f"project not found: {name}",
+                code=ErrorCode.NOT_FOUND,
+            )
+        return ProjectDetailResponse(
+            name=match.name,
+            description=match.description,
+            icon=match.icon,
+            session_count=match.session_count,
+        )
+
+    # ── PUT /sessions/projects/{name} ─────────────────────────────
+
+    @router.put(
+        "/sessions/projects/{name}",
+        response_model=None,
+    )
+    async def put_session_project(
+        request: Request,
+        name: str,
+        body: ProjectUpdateRequest,
+    ) -> ProjectDetailResponse:
+        """
+        Upsert a project's metadata (description / icon).
+
+        Gated on ``OMNIGENT_FUNCTIONAL_PROJECTS`` — returns ``404`` when
+        the feature is off, so a flag-off build behaves as though the
+        route does not exist. Requires the project to be visible to the
+        caller (same ACL union as GET), so a user can't create metadata
+        for a project they can't see; a brand-new explicit project the
+        caller just created via a session label is visible immediately.
+
+        :param request: The incoming FastAPI request (for auth).
+        :param name: The project name, e.g. ``"my-project"``.
+        :param body: The validated :class:`ProjectUpdateRequest`.
+        :returns: The updated :class:`ProjectDetailResponse`.
+        :raises OmnigentError: 404 if the feature is off or the project is
+            not visible.
+        """
+        if not functional_projects_enabled():
+            raise OmnigentError(
+                f"project not found: {name}",
+                code=ErrorCode.NOT_FOUND,
+            )
+        user_id = _require_user(request, auth_provider)
+        rows = await asyncio.to_thread(
+            conversation_store.list_projects_detailed,
+            accessible_by=user_id,
+        )
+        match = next((r for r in rows if r.name == name), None)
+        if match is None:
+            raise OmnigentError(
+                f"project not found: {name}",
+                code=ErrorCode.NOT_FOUND,
+            )
+        await asyncio.to_thread(
+            conversation_store.upsert_project,
+            name,
+            description=body.description,
+            icon=body.icon,
+        )
+        # Re-read the detailed row so the response carries the fresh
+        # metadata alongside the (unchanged) session count.
+        rows = await asyncio.to_thread(
+            conversation_store.list_projects_detailed,
+            accessible_by=user_id,
+        )
+        updated = next((r for r in rows if r.name == name), match)
+        return ProjectDetailResponse(
+            name=updated.name,
+            description=updated.description,
+            icon=updated.icon,
+            session_count=updated.session_count,
         )
 
     # ── PUT /sessions/{session_id}/read-state ─────────────────────

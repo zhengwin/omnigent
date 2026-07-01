@@ -1982,6 +1982,50 @@ class ReadStatePutRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ProjectDetailResponse(BaseModel):
+    """
+    Response body for the project detail / list-detailed endpoints.
+
+    One project as surfaced to the projects view — metadata from the
+    ``projects`` table plus the live member-session count. ``description``
+    / ``icon`` are ``null`` for an implicit (label-only) project with no
+    metadata row; ``session_count`` is ``0`` for a metadata row created
+    before it has any member sessions.
+
+    :param name: The project name, e.g. ``"my-project"``.
+    :param description: Standing-instructions text, or ``null``.
+    :param icon: Optional icon id, or ``null``.
+    :param session_count: Number of non-archived, accessible member
+        sessions.
+    """
+
+    name: str
+    description: str | None
+    icon: str | None
+    session_count: int
+
+
+class ProjectUpdateRequest(BaseModel):
+    """
+    Request body for ``PUT /v1/sessions/projects/{name}``.
+
+    Upserts a project's metadata. Per-field patch semantics: an omitted
+    field is left unchanged; an explicit empty string clears it. At least
+    one field is expected but an all-empty body is a harmless no-op
+    (the row's ``updated_at`` still advances).
+
+    :param description: New standing-instructions text, or ``null`` to
+        leave unchanged. Empty string clears it.
+    :param icon: New icon id, or ``null`` to leave unchanged. Empty string
+        clears it.
+    """
+
+    description: str | None = None
+    icon: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class SessionSwitchAgentRequest(BaseModel):
     """
     Request body for ``POST /v1/sessions/{id}/switch-agent``.

@@ -30,6 +30,7 @@ from omnigent.db.db_models import (
     SqlConversation,
     SqlConversationItem,
     SqlConversationLabel,
+    SqlProject,
     SqlUserDailyCost,
 )
 from omnigent.db.utils import (
@@ -62,6 +63,8 @@ from omnigent.stores.conversation_store import (
     ConversationNotFoundError,
     ConversationStore,
     CreatedSession,
+    ProjectDetail,
+    ProjectRecord,
     SessionConnectivity,
 )
 
@@ -1557,6 +1560,138 @@ class SqlAlchemyConversationStore(ConversationStore):
                 )
                 stmt = stmt.where(SqlConversationLabel.conversation_id.in_(accessible_ids))
             return [row[0] for row in session.execute(stmt).all()]
+
+    def list_projects_detailed(
+        self,
+        accessible_by: str | None = None,
+    ) -> list[ProjectDetail]:
+        """
+        Return every project with metadata + member-session count.
+
+        UNION of implicit (label-only) projects and explicit ``projects``
+        rows — see the base-class contract. Implemented as a Python-side
+        merge of two cheap queries rather than a single SQL FULL OUTER
+        JOIN (SQLite has no FULL OUTER JOIN), which keeps the query
+        portable across SQLite + Postgres.
+
+        :param accessible_by: When set, restrict the implicit-project set
+            and the session counts to sessions the user can access.
+        :returns: List of :class:`ProjectDetail` ordered by name.
+        """
+        with self._session() as session:
+            # 1) Session counts per implicit project (non-archived members,
+            #    ACL-filtered). This is the same filter as list_projects,
+            #    grouped so we get counts in one pass.
+            count_stmt = (
+                select(
+                    SqlConversationLabel.value,
+                    func.count(SqlConversationLabel.conversation_id),
+                )
+                .join(
+                    SqlConversation,
+                    SqlConversation.id == SqlConversationLabel.conversation_id,
+                )
+                .where(
+                    SqlConversationLabel.key == PROJECT_LABEL_KEY,
+                    SqlConversation.archived.is_(False),
+                )
+                .group_by(SqlConversationLabel.value)
+            )
+            if accessible_by is not None:
+                from omnigent.db.db_models import SqlSessionPermission
+
+                accessible_ids = select(SqlSessionPermission.conversation_id).where(
+                    SqlSessionPermission.user_id == accessible_by
+                )
+                count_stmt = count_stmt.where(
+                    SqlConversationLabel.conversation_id.in_(accessible_ids)
+                )
+            counts: dict[str, int] = {
+                row[0]: row[1] for row in session.execute(count_stmt).all()
+            }
+
+            # 2) All explicit metadata rows.
+            meta: dict[str, SqlProject] = {
+                row.name: row for row in session.execute(select(SqlProject)).scalars().all()
+            }
+
+            # 3) Union the two name sets and build the detail records.
+            names = set(counts) | set(meta)
+            details = [
+                ProjectDetail(
+                    name=name,
+                    description=meta[name].description if name in meta else None,
+                    icon=meta[name].icon if name in meta else None,
+                    session_count=counts.get(name, 0),
+                )
+                for name in names
+            ]
+            details.sort(key=lambda d: d.name)
+            return details
+
+    def get_project(self, name: str) -> ProjectRecord | None:
+        """
+        Return the ``projects`` metadata row for *name*, or ``None``.
+
+        :param name: The project name / primary key.
+        :returns: The :class:`ProjectRecord`, or ``None`` when no row.
+        """
+        with self._session() as session:
+            row = session.get(SqlProject, name)
+            if row is None:
+                return None
+            return ProjectRecord(
+                name=row.name,
+                description=row.description,
+                icon=row.icon,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+            )
+
+    def upsert_project(
+        self,
+        name: str,
+        description: str | None = None,
+        icon: str | None = None,
+    ) -> ProjectRecord:
+        """
+        Create or update the ``projects`` metadata row for *name*.
+
+        Insert-or-update with per-field patch semantics: an omitted
+        (``None``) argument leaves the existing column untouched; an empty
+        string clears the field. ``updated_at`` is always refreshed.
+
+        :param name: The project name / primary key.
+        :param description: New description, ``None`` to leave unchanged.
+        :param icon: New icon id, ``None`` to leave unchanged.
+        :returns: The resulting :class:`ProjectRecord`.
+        """
+        now = now_epoch()
+        with self._session() as session:
+            row = session.get(SqlProject, name)
+            if row is None:
+                row = SqlProject(
+                    name=name,
+                    description=description,
+                    icon=icon,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+            else:
+                if description is not None:
+                    row.description = description
+                if icon is not None:
+                    row.icon = icon
+                row.updated_at = now
+            session.flush()
+            return ProjectRecord(
+                name=row.name,
+                description=row.description,
+                icon=row.icon,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+            )
 
     def delete_label(
         self,

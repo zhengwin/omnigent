@@ -793,3 +793,45 @@ class SqlUserDailyCost(Base):
     cost_usd: Mapped[float] = mapped_column(Float, nullable=False)
     ask_approved_usd: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
     updated_at: Mapped[int] = mapped_column(Integer)
+
+
+class SqlProject(Base):
+    """
+    SQLAlchemy model for the ``projects`` table.
+
+    Holds per-project *metadata* keyed by project name. Membership
+    stays where it always was — a session belongs to a project via its
+    ``conversation_labels`` row ``key="omni_project"`` — so this table
+    is purely additive: a project can exist as label rows with no
+    ``projects`` row (an *implicit* project), and a ``projects`` row can
+    exist with zero member sessions (created via the projects page).
+    ``list_projects_detailed`` unions both so neither ever drops out of
+    the sidebar / projects view.
+
+    The primary reason for a first-class row is the **description**: the
+    per-project standing-instruction block injected into every member
+    session's system prompt (the "functional projects" feature). A
+    description wants to be longer than the 256-char cap on
+    ``conversation_labels.value`` and lives at the project level, not on
+    each session — so it needs its own home.
+
+    :param name: The project name, e.g. ``"my-project"``. Primary key;
+        this is the same string stored in the ``omni_project`` label
+        value, so it is the join key between metadata and membership.
+    :param description: Free-form standing instructions injected as a
+        ``<project_instructions>`` block into member sessions' system
+        prompt. ``NULL``/empty means no injection (zero-diff default).
+        ``Text`` (not ``String``) so it can exceed the label cap.
+    :param icon: Optional icon identifier for the projects UI, e.g.
+        ``"rocket"``. ``NULL`` when unset.
+    :param created_at: Unix epoch seconds at row creation.
+    :param updated_at: Unix epoch seconds of the last write.
+    """
+
+    __tablename__ = "projects"
+
+    name: Mapped[str] = mapped_column(String(256), primary_key=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    icon: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[int] = mapped_column(Integer)
