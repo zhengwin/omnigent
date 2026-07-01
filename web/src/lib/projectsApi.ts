@@ -101,9 +101,16 @@ export function normalizeProjectSummary(entry: unknown): ProjectSummary | null {
  * ``string[]`` list shape and the enriched object-array shape. Malformed rows
  * are dropped; results are sorted by name (case-insensitive) so the page has a
  * stable order regardless of server ordering.
+ *
+ * Passes ``?detail=true`` so the server returns the enriched object array
+ * (name + description + icon + session_count). Without it the backend keeps
+ * the endpoint at its legacy ``string[]`` shape and the page shows empty
+ * descriptions / null counts — the very data it exists to display. The
+ * tolerant normalizer still handles a bare ``string[]`` for older servers that
+ * ignore the flag.
  */
 export async function fetchProjectSummaries(): Promise<ProjectSummary[]> {
-  const res = await authenticatedFetch("/v1/sessions/projects");
+  const res = await authenticatedFetch("/v1/sessions/projects?detail=true");
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   const raw = (await res.json()) as unknown;
   const list = Array.isArray(raw) ? raw : [];
