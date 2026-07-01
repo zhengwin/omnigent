@@ -99,6 +99,25 @@ def function_tool_yaml(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.fixture()
+def create_toplevel_yaml(tmp_path: Path) -> Path:
+    """
+    Omnigent YAML granting independent top-level session creation.
+    """
+    config = {
+        "name": "toplevel_spawner",
+        "prompt": "Start independent review sessions when asked.",
+        "executor": {
+            "model": "databricks-claude-sonnet-4",
+            "harness": "claude-sdk",
+        },
+        "create_toplevel_sessions": True,
+    }
+    path = tmp_path / "create_toplevel.yaml"
+    path.write_text(yaml.dump(config))
+    return path
+
+
 def _roundtrip(yaml_path: Path) -> None:
     """
     Load the YAML via omnigent' loader, translate to an
@@ -123,6 +142,7 @@ def _roundtrip(yaml_path: Path) -> None:
 
     assert recovered.name == original.name
     assert recovered.prompt == original.prompt
+    assert recovered.create_toplevel_sessions == original.create_toplevel_sessions
     # Executor fields are compared individually rather than by
     # whole-dataclass equality because the adapter's
     # :func:`_infer_harness_from_model` enriches ``harness`` from
@@ -201,3 +221,11 @@ def test_roundtrip_function_tool(function_tool_yaml: Path) -> None:
     re-appears under a different name.
     """
     _roundtrip(function_tool_yaml)
+
+
+def test_roundtrip_create_toplevel_sessions(create_toplevel_yaml: Path) -> None:
+    """
+    ``create_toplevel_sessions: true`` survives AgentDef ↔ AgentSpec
+    translation.
+    """
+    _roundtrip(create_toplevel_yaml)

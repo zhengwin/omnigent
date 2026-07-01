@@ -195,6 +195,7 @@ def agent_spec_to_agent_def(spec: AgentSpec) -> AgentDef:
         os_env=spec.os_env,
         bundle_dir=bundle_dir,
         skills_filter=spec.skills_filter,
+        create_toplevel_sessions=spec.create_toplevel_sessions,
     )
 
 
@@ -1179,6 +1180,7 @@ def agent_def_to_agent_spec(
         terminals=terminals,
         timers=agent_def.timers,
         spawn=agent_def.spawn,
+        create_toplevel_sessions=agent_def.create_toplevel_sessions,
         # AgentDef.agent_session_sharing is the raw YAML string
         # ("none"/"non-public"/"public"); map it to the SharePolicy enum
         # AgentSpec expects.

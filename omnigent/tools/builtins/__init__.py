@@ -50,6 +50,7 @@ from omnigent.tools.builtins.read_skill_file import (
 from omnigent.tools.builtins.spawn import (
     SysSessionCloseTool,
     SysSessionCreateTool,
+    SysSessionCreateToplevelTool,
     SysSessionGetHistoryTool,
     SysSessionGetInfoTool,
     SysSessionListTool,
@@ -79,6 +80,7 @@ __all__ = [
     "SysReadInboxTool",
     "SysSessionCloseTool",
     "SysSessionCreateTool",
+    "SysSessionCreateToplevelTool",
     "SysSessionGetHistoryTool",
     "SysSessionGetInfoTool",
     "SysSessionListTool",
@@ -200,6 +202,11 @@ _BUILTIN_REGISTRY: dict[str, _BuiltinFactory | None] = {
     "web_fetch": None,
     "list_comments": None,
     "update_comment": None,
+    # ``sys_session_create_toplevel`` is registered explicitly by
+    # ``ToolManager._register_sub_agent_tools`` only when the spec grants
+    # ``create_toplevel_sessions``. It is reserved here so user-declared
+    # local/MCP tools cannot shadow the runner-dispatched builtin name.
+    "sys_session_create_toplevel": None,
     # ``sys_list_models`` is auto-registered by
     # ``ToolManager._register_sub_agent_tools`` with the dispatch grant
     # and intercepted by name in the runner's tool dispatch — reserved

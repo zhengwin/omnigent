@@ -31,6 +31,7 @@ from omnigent.tools.builtins import (
     SysReadInboxTool,
     SysSessionCloseTool,
     SysSessionCreateTool,
+    SysSessionCreateToplevelTool,
     SysSessionGetHistoryTool,
     SysSessionGetInfoTool,
     SysSessionListTool,
@@ -417,6 +418,9 @@ class ToolManager:
           registers send/close (an agent must be able to drive and
           tombstone the children it creates); without declared
           sub-agents, send's schema omits the named-mode parameters.
+        - ``create_toplevel_sessions: true`` registers
+          ``sys_session_create_toplevel`` — launching independent
+          top-level sessions outside the caller's subtree.
 
         The spawn writes are child-only and ``sys_session_share`` is
         owner-authority-bounded, both enforced at dispatch/server level;
@@ -442,6 +446,12 @@ class ToolManager:
             self._tools[SysSessionShareTool.name()] = SysSessionShareTool(
                 allow_public=self._spec.agent_session_sharing is SharePolicy.PUBLIC,
             )
+
+        # Top-level session creation is its own grant and intentionally
+        # sits above the spawn/tools.agents early return: a top-level
+        # spawner may have no child-spawn authority at all.
+        if self._spec.create_toplevel_sessions:
+            self._tools[SysSessionCreateToplevelTool.name()] = SysSessionCreateToplevelTool()
 
         # send + close: opt-in via declared sub-agents or spawn: true.
         if not (self._spec.tools.agents or self._spec.spawn):

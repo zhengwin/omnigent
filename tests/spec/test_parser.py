@@ -2467,6 +2467,36 @@ def test_parse_spawn_true_sets_flag(tmp_path: Path) -> None:
     assert spec.spawn is True
 
 
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        (None, False),
+        (False, False),
+        (True, True),
+    ],
+)
+def test_parse_create_toplevel_sessions_flag(
+    tmp_path: Path,
+    raw_value: bool | None,
+    expected: bool,
+) -> None:
+    """
+    ``create_toplevel_sessions:`` parses as a default-off top-level
+    privilege grant.
+
+    This grant advertises ``sys_session_create_toplevel`` separately from
+    ``spawn`` because it creates independent sidebar-peer sessions outside
+    the caller's subtree.
+    """
+    config = {"spec_version": 1, "name": "toplevel-agent"}
+    if raw_value is not None:
+        config["create_toplevel_sessions"] = raw_value
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+
+    spec = parse(tmp_path)
+    assert spec.create_toplevel_sessions is expected
+
+
 def test_parse_share_defaults_to_none_when_omitted(agent_dir: Path) -> None:
     """
     Without a top-level ``agent_session_sharing:`` key the parsed

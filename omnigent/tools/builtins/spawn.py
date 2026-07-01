@@ -53,6 +53,73 @@ _HISTORY_MAX_TAIL = 50
 _CLOSED_TITLE_INFIX = CLOSED_TITLE_INFIX
 
 
+def _session_create_schema(tool_name: str, description: str) -> dict[str, Any]:
+    """
+    Return the shared schema for session-create tools.
+
+    The child and top-level variants intentionally expose the same argument
+    shape; their privilege boundary is the tool name and grant that registered
+    the schema, plus runner/server dispatch.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": tool_name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": (
+                            "Existing-agent mode: the agent to "
+                            "launch, e.g. 'ag_abc123'. Get it from "
+                            "sys_agent_list (both builtins and "
+                            "session_agents rows carry it) or "
+                            "sys_agent_get (a session's agent). "
+                            "Use instead of config_path."
+                        ),
+                    },
+                    "config_path": {
+                        "type": "string",
+                        "description": (
+                            "New-agent mode: path to a local agent "
+                            "config YAML, agent directory, or "
+                            ".tar.gz bundle, relative to your "
+                            "working directory, e.g. "
+                            "'.omnigent/agent-configs/helper.yaml'. "
+                            "Uploads it as a fresh agent and "
+                            "launches the child from it. Use "
+                            "instead of agent_id."
+                        ),
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": (
+                            "Optional human-readable label for the "
+                            "new session, e.g. 'auth refactor'."
+                        ),
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": (
+                            "Optional first user message to queue "
+                            "for the child. Omit to create an idle "
+                            "session and drive it later via "
+                            "sys_session_send."
+                        ),
+                    },
+                },
+                # Only the always-optional fields are listed in
+                # ``required`` (none): the agent_id-vs-config_path
+                # mode split is enforced in the runner handler.
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 class SysSessionSendTool(Tool):
     """
     Send a message to a named sub-agent — auto-create-or-continue.
@@ -851,63 +918,51 @@ class SysSessionCreateTool(Tool):
             in the runner handler (the schema can't express
             "exactly one of two fields" portably across providers).
         """
-        return {
-            "type": "function",
-            "function": {
-                "name": SysSessionCreateTool.name(),
-                "description": SysSessionCreateTool.description(),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "agent_id": {
-                            "type": "string",
-                            "description": (
-                                "Existing-agent mode: the agent to "
-                                "launch, e.g. 'ag_abc123'. Get it from "
-                                "sys_agent_list (both builtins and "
-                                "session_agents rows carry it) or "
-                                "sys_agent_get (a session's agent). "
-                                "Use instead of config_path."
-                            ),
-                        },
-                        "config_path": {
-                            "type": "string",
-                            "description": (
-                                "New-agent mode: path to a local agent "
-                                "config YAML, agent directory, or "
-                                ".tar.gz bundle, relative to your "
-                                "working directory, e.g. "
-                                "'.omnigent/agent-configs/helper.yaml'. "
-                                "Uploads it as a fresh agent and "
-                                "launches the child from it. Use "
-                                "instead of agent_id."
-                            ),
-                        },
-                        "title": {
-                            "type": "string",
-                            "description": (
-                                "Optional human-readable label for the "
-                                "new session, e.g. 'auth refactor'."
-                            ),
-                        },
-                        "message": {
-                            "type": "string",
-                            "description": (
-                                "Optional first user message to queue "
-                                "for the child. Omit to create an idle "
-                                "session and drive it later via "
-                                "sys_session_send."
-                            ),
-                        },
-                    },
-                    # Only the always-optional fields are listed in
-                    # ``required`` (none): the agent_id-vs-config_path
-                    # mode split is enforced in the runner handler.
-                    "required": [],
-                    "additionalProperties": False,
-                },
-            },
-        }
+        return _session_create_schema(self.name(), self.description())
+
+
+class SysSessionCreateToplevelTool(Tool):
+    """
+    Create an independent top-level session from an agent or local bundle.
+
+    Runner-dispatched: this schema-only tool has no local ``invoke``.
+    """
+
+    @classmethod
+    def name(cls) -> str:
+        """:returns: ``"sys_session_create_toplevel"``."""
+        return "sys_session_create_toplevel"
+
+    @classmethod
+    def description(cls) -> str:
+        """:returns: Human-readable description of the tool."""
+        return (
+            "Create a TOP-LEVEL INDEPENDENT Omnigent session from an "
+            "agent. This launches its own conversation and appears as a "
+            "sidebar peer, NOT as a child/sub-agent under your current "
+            "session. Two modes — provide exactly one: agent_id launches "
+            "an existing agent; config_path uploads a local agent config "
+            "YAML, agent directory, or .tar.gz bundle from your working "
+            "directory and launches it. Optionally queue an initial user "
+            "message and title. This is fire-and-forget: the new top-level "
+            "session is outside your spawn subtree, and your sys_session_* "
+            "read tools will NOT list it or let you monitor it."
+        )
+
+    def get_schema(self) -> dict[str, Any]:
+        """
+        Return the OpenAI-format tool schema.
+
+        :returns: Same argument shape as ``sys_session_create``:
+            ``agent_id`` XOR ``config_path`` plus optional ``title`` and
+            ``message``. The XOR is enforced by the runner.
+        """
+        return _session_create_schema(self.name(), self.description())
+
+
+# WHY: this is a separate tool and grant, not a bool on
+# ``sys_session_create``, because spawning outside the caller's subtree is
+# a privilege boundary that must be independently granted and audited.
 
 
 # ── Check / result helpers ────────────────────────────
