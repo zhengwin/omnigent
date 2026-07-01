@@ -621,6 +621,22 @@ def test_session_create_host_type_defaults_external() -> None:
     assert req.host_type == "external"
 
 
+def test_session_create_request_accepts_runner_affinity_id() -> None:
+    """JSON session create carries optional runner affinity unchanged."""
+    from omnigent.server.schemas import SessionCreateRequest
+
+    req = SessionCreateRequest(agent_id="ag_x", runner_affinity_id="runner_abc")
+    assert req.runner_affinity_id == "runner_abc"
+
+
+def test_session_create_metadata_accepts_runner_affinity_id() -> None:
+    """Multipart session metadata allows the runner affinity field."""
+    from omnigent.server.schemas import SessionCreateMetadata
+
+    metadata = SessionCreateMetadata(runner_affinity_id="runner_abc")
+    assert metadata.runner_affinity_id == "runner_abc"
+
+
 def test_session_create_managed_rejects_host_id() -> None:
     """
     ``host_type="managed"`` + caller-supplied ``host_id`` is a

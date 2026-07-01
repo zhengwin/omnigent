@@ -12057,6 +12057,12 @@ async def _create_session_from_existing_agent(
                 runner_owner = runner_router.runner_owner(inherited_runner_id)
                 if runner_owner is not None and runner_owner != user_id:
                     inherited_runner_id = None
+    elif body.runner_affinity_id is not None:
+        inherited_runner_id = _resolve_toplevel_affinity_runner(
+            runner_router,
+            body.runner_affinity_id,
+            user_id=user_id,
+        )
 
     # Workspace validation: if the caller is binding to a host,
     # they must also pass a workspace, and the workspace must
@@ -12505,6 +12511,49 @@ async def _authorize_bundled_parent_and_inherit_runner(
         if runner_owner is not None and runner_owner != user_id:
             return None
     return inherited_runner_id
+
+
+_TOPLEVEL_AFFINITY_MANAGED_UNSUPPORTED_MESSAGE = (
+    "top-level session spawn requires local single-user mode; "
+    "managed/hosted spawn is not yet supported — see v2"
+)
+
+
+def _resolve_toplevel_affinity_runner(
+    runner_router: RunnerRouter | None,
+    raw_runner_id: str,
+    *,
+    user_id: str | None,
+) -> str:
+    """
+    Validate a parentless create's explicit runner affinity.
+
+    Top-level affinity writes directly to ``conversations.runner_id`` at
+    create time, so it must fail closed: no unknown, offline, or
+    cross-user runner id may be accepted and left for a later runner
+    connection to adopt.
+
+    :param runner_router: Router backed by the live tunnel registry.
+    :param raw_runner_id: Caller-provided runner id, e.g.
+        ``"runner_abc123"``.
+    :param user_id: Authenticated creator, or ``None`` in no-auth mode.
+    :returns: Trimmed, online runner id.
+    :raises OmnigentError: If the id is empty, unavailable, offline,
+        or not allowed for this top-level create.
+    """
+    runner_id = _registered_runner_id(runner_router, raw_runner_id)
+    runner_owner = cast(RunnerRouter, runner_router).runner_owner(runner_id)
+    if not local_single_user_enabled() and (user_id is None or runner_owner != user_id):
+        raise OmnigentError(
+            _TOPLEVEL_AFFINITY_MANAGED_UNSUPPORTED_MESSAGE,
+            code=ErrorCode.INVALID_INPUT,
+        )
+    if user_id is not None and runner_owner is not None and runner_owner != user_id:
+        raise OmnigentError(
+            f"runner {runner_id!r} is not owned by the requesting user",
+            code=ErrorCode.FORBIDDEN,
+        )
+    return runner_id
 
 
 async def _notify_runner_of_bundled_child(
@@ -14047,6 +14096,12 @@ def create_sessions_router(
                 permission_store=permission_store,
                 conversation_store=conversation_store,
                 runner_router=runner_router,
+            )
+        elif parsed_metadata.runner_affinity_id is not None:
+            inherited_runner_id = _resolve_toplevel_affinity_runner(
+                runner_router,
+                parsed_metadata.runner_affinity_id,
+                user_id=user_id,
             )
 
         bundle_bytes = await bundle.read()
