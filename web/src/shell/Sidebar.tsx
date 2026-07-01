@@ -60,6 +60,7 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/routing";
+import { useServerInfo } from "@/lib/CapabilitiesContext";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -182,13 +183,22 @@ interface SidebarProps {
  * which is `inbox` in both standalone and embedded modes. Conversation ids are
  * `conv_…`-prefixed, so a chat route's leaf can never collide with `inbox`.
  */
-function useActiveNavItem(): { isNewChatPage: boolean; isInboxPage: boolean } {
+function useActiveNavItem(): {
+  isNewChatPage: boolean;
+  isInboxPage: boolean;
+  isProjectsPage: boolean;
+} {
   const { conversationId: activeConversationId } = useParams<{ conversationId: string }>();
-  const isInboxPage = useLocation().pathname.split("/").filter(Boolean).at(-1) === "inbox";
-  // Exclude inbox: it also has no `:conversationId`, so it would otherwise
-  // light up the "New session" button.
-  const isNewChatPage = activeConversationId == null && !isInboxPage;
-  return { isNewChatPage, isInboxPage };
+  const segments = useLocation().pathname.split("/").filter(Boolean);
+  const isInboxPage = segments.at(-1) === "inbox";
+  // Both `/projects` and `/projects/:name` light up the Projects entry — key
+  // off the presence of the `projects` segment anywhere in the path (the leaf
+  // is the project name on the detail view).
+  const isProjectsPage = segments.includes("projects");
+  // Exclude inbox + projects: they also have no `:conversationId`, so they'd
+  // otherwise light up the "New session" button.
+  const isNewChatPage = activeConversationId == null && !isInboxPage && !isProjectsPage;
+  return { isNewChatPage, isInboxPage, isProjectsPage };
 }
 
 /**
@@ -299,7 +309,13 @@ export function Sidebar({ open, onClose, dragProgress = null }: SidebarProps) {
   }
 
   // Which top-level nav button to highlight for the current route.
-  const { isNewChatPage, isInboxPage } = useActiveNavItem();
+  const { isNewChatPage, isInboxPage, isProjectsPage } = useActiveNavItem();
+
+  // Functional projects: gate the "Projects" nav entry on the server flag so a
+  // flag-off deploy renders the sidebar byte-identically (entry not rendered).
+  const serverInfo = useServerInfo();
+  const functionalProjectsEnabled =
+    serverInfo !== "loading" && serverInfo.functional_projects_enabled;
 
   // On /settings the card keeps its chrome but swaps the conversation list
   // for the settings section nav (see settingsNav.tsx) — entering settings
@@ -486,6 +502,25 @@ export function Sidebar({ open, onClose, dragProgress = null }: SidebarProps) {
                 New session
               </Link>
             </Button>
+            {/* Projects — flag-gated entry to the full-page projects browser.
+                Rendered only when the server reports functional projects on, so
+                a flag-off deploy's sidebar is byte-identical to before. */}
+            {functionalProjectsEnabled && (
+              <Button
+                asChild
+                className={cn(
+                  "w-full justify-start gap-2 text-sm",
+                  isProjectsPage && "bg-muted font-semibold",
+                )}
+                variant="ghost"
+                data-testid="projects-nav-button"
+              >
+                <Link to="/projects" onClick={onNavClick}>
+                  <FolderIcon className="size-4 text-foreground" />
+                  Projects
+                </Link>
+              </Button>
+            )}
             {selectionMode ? (
               <BulkActionBar
                 selectedIds={selectedIds}
@@ -2823,6 +2858,12 @@ function ProjectFolderMenu({ projectName }: { projectName: string }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const deleteProject = useDeleteProject();
+  const navigate = useNavigate();
+  // Gate the "Open project" item on the functional-projects flag: the detail
+  // route only exists when the flag is on.
+  const serverInfo = useServerInfo();
+  const functionalProjectsEnabled =
+    serverInfo !== "loading" && serverInfo.functional_projects_enabled;
 
   return (
     <>
@@ -2841,6 +2882,18 @@ function ProjectFolderMenu({ projectName }: { projectName: string }) {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-40 [&_[role=menuitem]]:text-xs">
+          {functionalProjectsEnabled && (
+            <DropdownMenuItem
+              data-testid="open-project"
+              onSelect={() => {
+                setMenuOpen(false);
+                navigate(`/projects/${encodeURIComponent(projectName)}`);
+              }}
+            >
+              <FolderOpenIcon className="size-3.5" />
+              Open project
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem
             data-testid="delete-project"
             variant="destructive"

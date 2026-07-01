@@ -34,6 +34,14 @@ import {
   type SessionListWireItem,
 } from "@/lib/sessionListCache";
 import { stopSession } from "@/lib/sessionsApi";
+import {
+  fetchProjectDetails,
+  fetchProjectSummaries,
+  updateProject,
+  type ProjectDetails,
+  type ProjectSummary,
+  type UpdateProjectPayload,
+} from "@/lib/projectsApi";
 import type { Session } from "@/lib/types";
 import { useSessionUpdatesConnected } from "./useSessionUpdatesConnected";
 import { markConversationSeen } from "./useUnseenConversations";
@@ -657,14 +665,40 @@ export function usePinnedConversationBackfill(
  */
 export const PROJECT_LABEL_KEY = "omni_project";
 
-/** Fetch all project names from `GET /v1/sessions/projects`. */
+/**
+ * Fetch all project NAMES from `GET /v1/sessions/projects`.
+ *
+ * The list endpoint historically returned a bare `string[]`. The functional-
+ * projects feature may enrich it to an array of
+ * `{ name, description, icon, session_count }` objects (see `projectsApi`).
+ * This hook extracts names from BOTH shapes so the sidebar's name-only
+ * grouping keeps working regardless of which the server ships — a bare string
+ * is used as-is, an object contributes its `name` (or `project`) field.
+ */
 export function useProjects() {
   return useQuery<string[]>({
     queryKey: ["projects"],
     queryFn: async () => {
       const res = await authenticatedFetch("/v1/sessions/projects");
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      return (await res.json()) as string[];
+      const raw = (await res.json()) as unknown;
+      if (!Array.isArray(raw)) return [];
+      const names: string[] = [];
+      for (const entry of raw) {
+        if (typeof entry === "string") {
+          names.push(entry);
+        } else if (entry !== null && typeof entry === "object") {
+          const row = entry as Record<string, unknown>;
+          const name =
+            typeof row.name === "string"
+              ? row.name
+              : typeof row.project === "string"
+                ? row.project
+                : null;
+          if (name) names.push(name);
+        }
+      }
+      return names;
     },
     staleTime: 30_000,
   });
@@ -831,6 +865,70 @@ export function useDeleteProject() {
       void queryClient.invalidateQueries({ queryKey: ["conversations"] });
       void queryClient.invalidateQueries({ queryKey: ["projects"] });
       void queryClient.invalidateQueries({ queryKey: ["project-sessions"] });
+    },
+  });
+}
+
+// ── Functional projects (Projects page + description editor) ─────────────────
+//
+// These hooks power the flag-gated Projects page and per-project description
+// ("Project instructions") editor. They read/write project *metadata* via the
+// `projectsApi` helpers, distinct from the sidebar's `useProjects()` which only
+// needs the bare name list. All consumers must gate on
+// `useServerInfo().functional_projects_enabled` before rendering.
+
+/**
+ * Fetch every project as an enriched {@link ProjectSummary} (name + description
+ * + icon + session count) for the Projects list page.
+ *
+ * Keyed under `["projects", "summaries"]` — a sibling of the sidebar's bare
+ * `["projects"]` list, so the two coexist and each invalidation path (move /
+ * delete / description edit) can target the right cache. Tolerates a legacy
+ * `string[]` list shape (see `fetchProjectSummaries`), so it renders against an
+ * older server too.
+ */
+export function useProjectSummaries() {
+  return useQuery<ProjectSummary[]>({
+    queryKey: ["projects", "summaries"],
+    queryFn: fetchProjectSummaries,
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * Fetch one project's details (incl. its description) via
+ * `GET /v1/sessions/projects/{name}`. Resolves to `null` on 404 so the detail
+ * page can render a "not found" empty state. `enabled` gates the fetch (pass
+ * false when the flag is off or the name is missing).
+ */
+export function useProjectDetails(name: string, enabled = true) {
+  return useQuery<ProjectDetails | null>({
+    queryKey: ["project-details", name],
+    queryFn: () => fetchProjectDetails(name),
+    enabled: enabled && name.length > 0,
+  });
+}
+
+/**
+ * Upsert a project's description (and optional icon) via
+ * `PUT /v1/sessions/projects/{name}`.
+ *
+ * On success, invalidates the project-details cache for this name and both
+ * project-list caches (the enriched summaries used by the page and the bare
+ * `["projects"]` list the sidebar reads) so a saved description / new project
+ * shows up everywhere without a reload.
+ */
+export function useUpdateProjectDescription() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, ...payload }: { name: string } & UpdateProjectPayload) =>
+      updateProject(name, payload),
+    onSuccess: (updated) => {
+      // Seed the details cache with the server-confirmed row so the editor
+      // reflects the saved value immediately, then invalidate to reconcile.
+      queryClient.setQueryData<ProjectDetails | null>(["project-details", updated.name], updated);
+      void queryClient.invalidateQueries({ queryKey: ["project-details", updated.name] });
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
   });
 }
