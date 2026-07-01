@@ -20,6 +20,7 @@ Public API:
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 
 from omnigent.spec.types import SkillSpec
@@ -168,6 +169,60 @@ def _create_export_agent(config: dict[str, str]) -> Tool:
     return ExportAgentTool()
 
 
+# Feature flag gating the embedded-browser tools. Truthy env value
+# (anything non-empty other than the usual falsey strings) opts a
+# deployment into advertising the five ``browser_*`` tools. Unset —
+# the default — keeps the builtin registry, ``BUILTIN_NAMES``, and
+# ``INSTANTIABLE_BUILTINS`` byte-for-byte identical to before this
+# feature landed (design Task 7: zero-diff default).
+_BROWSER_TOOLS_FLAG = "OMNIGENT_BROWSER_TOOLS"
+_BROWSER_FALSEY = frozenset({"", "0", "false", "no", "off"})
+
+
+def _browser_tools_enabled() -> bool:
+    """
+    Whether the embedded-browser builtins should be registered.
+
+    :returns: ``True`` when ``OMNIGENT_BROWSER_TOOLS`` is set to a
+        truthy value; ``False`` (the default) otherwise.
+    """
+    return os.getenv(_BROWSER_TOOLS_FLAG, "").strip().lower() not in _BROWSER_FALSEY
+
+
+def _make_browser_factory(tool_name: str) -> _BuiltinFactory:
+    """
+    Build a lazy factory for one schema-only ``browser_*`` tool class.
+
+    Execution of the tool lives in the runner dispatch layer
+    (``omnigent/runner/tool_dispatch.py``); the class returned here is
+    schema surface only (``name`` / ``description`` / ``get_schema``).
+
+    :param tool_name: One of the five ``browser_*`` names.
+    :returns: A factory that constructs the matching Tool subclass.
+    """
+
+    def factory(config: dict[str, str]) -> Tool:
+        # Import lazily so the module only loads when the flag is on.
+        from omnigent.tools.builtins.browser import (
+            BrowserClickTool,
+            BrowserNavigateTool,
+            BrowserScreenshotTool,
+            BrowserSnapshotTool,
+            BrowserTypeTool,
+        )
+
+        by_name: dict[str, type[Tool]] = {
+            BrowserNavigateTool.name(): BrowserNavigateTool,
+            BrowserSnapshotTool.name(): BrowserSnapshotTool,
+            BrowserClickTool.name(): BrowserClickTool,
+            BrowserTypeTool.name(): BrowserTypeTool,
+            BrowserScreenshotTool.name(): BrowserScreenshotTool,
+        }
+        return by_name[tool_name]()
+
+    return factory
+
+
 # Unified registry for every reserved builtin name. The value
 # is either a factory callable (for user-enablable tools) or
 # ``None`` for framework-owned names that occupy the name-space
@@ -211,6 +266,22 @@ _BUILTIN_REGISTRY: dict[str, _BuiltinFactory | None] = {
     # cannot shadow it.
     "sys_advise_models": None,
 }
+
+# Flag-gated embedded-browser tools. Registered ONLY when
+# ``OMNIGENT_BROWSER_TOOLS`` is truthy so that, by default, the registry
+# (and everything derived from it below) is unchanged — zero-diff
+# behavior when the flag is unset (design Task 7). Each name maps to a
+# factory that constructs its schema-only ``browser_*`` Tool subclass;
+# execution lives in the runner dispatch ``_BROWSER_TOOLS`` branch.
+if _browser_tools_enabled():
+    for _browser_name in (
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_screenshot",
+    ):
+        _BUILTIN_REGISTRY[_browser_name] = _make_browser_factory(_browser_name)
 
 # Canonical set of every reserved builtin name. Derived from
 # the registry so there is a single source of truth — no drift
