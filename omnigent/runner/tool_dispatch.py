@@ -203,11 +203,10 @@ _ASYNC_INBOX_TOOLS = frozenset(
 # (peek/list/close) dispatch via ``_SESSION_QUERY_TOOLS`` below.
 _SUBAGENT_TOOLS = frozenset({"sys_session_send"})
 
-# Priority 5f.0a: Session-create write. ``sys_session_create`` spawns a
-# child session (parent forced to the caller) from an existing agent_id
-# via the JSON POST /v1/sessions create — same server-permission posture
-# as _execute_subagent_tool.
-_SESSION_CREATE_TOOLS = frozenset({"sys_session_create"})
+# Priority 5f.0a: Session-create writes. ``sys_session_create`` spawns a
+# child session (parent forced to the caller). ``sys_session_create_toplevel``
+# spawns an independent top-level session but pins it to this runner.
+_SESSION_CREATE_TOOLS = frozenset({"sys_session_create", "sys_session_create_toplevel"})
 
 # Priority 5f.0: Session query tools — peek/list/close/get_info/share. The
 # runner has no in-process ConversationStore, so these read/mutate session
@@ -1732,15 +1731,18 @@ def _build_session_create_body(
     conversation_id: str,
     title: Any,
     message: Any,
+    *,
+    top_level: bool = False,
 ) -> dict[str, Any]:
     """
-    Build the JSON ``POST /v1/sessions`` body for ``sys_session_create``.
+    Build the JSON ``POST /v1/sessions`` body for session-create tools.
 
-    ``parent_session_id`` is hard-forced to ``conversation_id`` — this is
-    what makes the write child-only (an orchestrator cannot create a
-    top-level or sibling session). A non-empty ``title`` and ``message``
-    are included when provided; the message becomes the child's first
-    queued user turn via ``initial_items``.
+    For child creates, ``parent_session_id`` is hard-forced to
+    ``conversation_id``. For top-level creates, no parent is sent; the
+    runner instead sends ``runner_affinity_id`` so the server binds the
+    independent session to this runner. A non-empty ``title`` and
+    ``message`` are included when provided; the message becomes the
+    session's first queued user turn via ``initial_items``.
 
     :param agent_id: The existing agent to launch, e.g. ``"ag_abc123"``.
     :param conversation_id: The caller's session id — the forced parent.
@@ -1750,10 +1752,13 @@ def _build_session_create_body(
         non-empty string.
     :returns: The JSON request body.
     """
-    body: dict[str, Any] = {
-        "agent_id": agent_id,
-        "parent_session_id": conversation_id,
-    }
+    body: dict[str, Any] = {"agent_id": agent_id}
+    if top_level:
+        from omnigent.runner.identity import get_stable_runner_id
+
+        body["runner_affinity_id"] = get_stable_runner_id()
+    else:
+        body["parent_session_id"] = conversation_id
     if isinstance(title, str) and title:
         body["title"] = title
     if isinstance(message, str) and message:
@@ -1764,6 +1769,34 @@ def _build_session_create_body(
             }
         ]
     return body
+
+
+def _finalize_toplevel_session(
+    data: dict[str, Any],
+    *,
+    agent_id: str,
+    title: Any,
+) -> str:
+    """
+    Build an independent-session handle for ``sys_session_create_toplevel``.
+
+    The existing ``session.created`` SSE schema is child-shaped
+    (parent_session_id + child_session_id) and child registration fans out
+    child updates onto a parent stream. Top-level creates are independent
+    sessions, so the MVP intentionally omits that transient event and relies
+    on the server's durable session row for discovery.
+    """
+    session_id = data["id"]
+    return json.dumps(
+        {
+            "conversation_id": session_id,
+            "kind": "session",
+            "agent_id": agent_id,
+            "agent_name": data.get("agent_name"),
+            "title": title if isinstance(title, str) else None,
+            "status": data.get("status") or "created",
+        }
+    )
 
 
 def _finalize_created_session(
@@ -1833,9 +1866,10 @@ async def _execute_session_create(
     publish_event: Callable[[str, dict[str, Any]], None] | None,
     agent_spec: Any | None = None,
     runner_workspace: Path | None = None,
+    top_level: bool = False,
 ) -> str:
     """
-    Create a child session (``sys_session_create``).
+    Create a child or top-level session.
 
     Two modes, split on the provided argument (exactly one required):
 
@@ -1846,13 +1880,10 @@ async def _execute_session_create(
       inside the caller's working directory) via the multipart
       ``POST /v1/sessions`` create.
 
-    Both modes force ``parent_session_id`` to the caller (child-only).
-    The child inherits the caller's runner (server-side affinity), so a
-    queued initial message starts a turn immediately. Returns a handle
-    the orchestrator can monitor (``sys_session_get_history`` /
-    ``sys_session_get_info``) or drive (``sys_session_send`` by
-    ``conversation_id``) — unlike named-mode send, it does NOT block on
-    the child turn.
+    ``sys_session_create`` forces ``parent_session_id`` to the caller
+    (child-only). ``sys_session_create_toplevel`` omits the parent and
+    sends this runner's ``runner_affinity_id`` so the server binds the
+    independent session to this runner and queued initial work can run.
 
     Maps a 404 to ``agent_not_found`` and 401/403 to ``access_denied``.
 
@@ -1899,9 +1930,14 @@ async def _execute_session_create(
             publish_event=publish_event,
             agent_spec=agent_spec,
             runner_workspace=runner_workspace,
+            top_level=top_level,
         )
     body = _build_session_create_body(
-        str(agent_id), conversation_id, args.get("title"), args.get("message")
+        str(agent_id),
+        conversation_id,
+        args.get("title"),
+        args.get("message"),
+        top_level=top_level,
     )
     try:
         resp = await server_client.post("/v1/sessions", json=body, timeout=30.0)
@@ -1917,7 +1953,21 @@ async def _execute_session_create(
         )
     data = resp.json()
     if not isinstance(data.get("id"), str) or not data["id"]:
-        return json.dumps({"error": "server did not return a child session id"})
+        return json.dumps(
+            {
+                "error": (
+                    "server did not return a session id"
+                    if top_level
+                    else "server did not return a child session id"
+                )
+            }
+        )
+    if top_level:
+        return _finalize_toplevel_session(
+            data,
+            agent_id=str(agent_id),
+            title=args.get("title"),
+        )
     return _finalize_created_session(
         data,
         conversation_id=conversation_id,
@@ -2028,9 +2078,10 @@ async def _upload_config_bundle(
     conversation_id: str,
     agent_spec: Any | None,
     runner_workspace: Path | None,
+    top_level: bool = False,
 ) -> dict[str, Any] | str:
     """
-    Resolve, bundle, and upload a local agent config as a child session.
+    Resolve, bundle, and upload a local agent config as a session.
 
     Reads ``config_path`` from the caller's os_env working directory
     (containment-checked, mirroring the ``sys_agent_download`` write
@@ -2063,7 +2114,12 @@ async def _upload_config_bundle(
     except Exception as exc:  # noqa: BLE001 — disk/tar errors become a typed tool error.
         return json.dumps({"error": f"sys_session_create failed to bundle config: {exc}"})
 
-    metadata: dict[str, Any] = {"parent_session_id": conversation_id}
+    if top_level:
+        from omnigent.runner.identity import get_stable_runner_id
+
+        metadata: dict[str, Any] = {"runner_affinity_id": get_stable_runner_id()}
+    else:
+        metadata = {"parent_session_id": conversation_id}
     title = args.get("title")
     if isinstance(title, str) and title:
         metadata["title"] = title
@@ -2095,9 +2151,10 @@ async def _session_create_from_config_path(
     publish_event: Callable[[str, dict[str, Any]], None] | None,
     agent_spec: Any | None,
     runner_workspace: Path | None,
+    top_level: bool = False,
 ) -> str:
     """
-    Bundle-mode ``sys_session_create``: upload a new agent and launch it.
+    Bundle-mode session create: upload a new agent and launch it.
 
     Delegates the resolve/bundle/upload pipeline to
     :func:`_upload_config_bundle`, validates the server's
@@ -2124,6 +2181,7 @@ async def _session_create_from_config_path(
         conversation_id=conversation_id,
         agent_spec=agent_spec,
         runner_workspace=runner_workspace,
+        top_level=top_level,
     )
     if isinstance(data, str):
         return data
@@ -2148,6 +2206,16 @@ async def _session_create_from_config_path(
         if message_error is not None:
             return message_error
 
+    if top_level:
+        return _finalize_toplevel_session(
+            {
+                "id": child_session_id,
+                "agent_name": data.get("agent_name"),
+                "status": "created",
+            },
+            agent_id=created_agent_id,
+            title=args.get("title"),
+        )
     return _finalize_created_session(
         # Adapt the multipart CreatedSessionResponse shape to the
         # session-snapshot keys _finalize_created_session reads.
@@ -4102,6 +4170,7 @@ async def execute_tool(
                 publish_event=publish_event,
                 agent_spec=agent_spec,
                 runner_workspace=runner_workspace,
+                top_level=(tool_name == "sys_session_create_toplevel"),
             )
         elif tool_name in _SESSION_QUERY_TOOLS:
             output = await _execute_session_query_tool(
