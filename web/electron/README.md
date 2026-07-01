@@ -215,11 +215,12 @@ XSS *within* the visited page — that page runs its own scripts in its own
 sandboxed view regardless.) Preserve this when extending the bridge: add typed,
 argument-shaped actions, not a passthrough JS channel.
 
-**Feature flag.** The agent-side `browser_*` tools are gated by the
-`OMNIGENT_BROWSER_TOOLS` env var, which the AP/runner reads **at process
-start** — toggling it needs an AP/runner restart to take effect (a live SIGHUP
-won't pick it up). Zero-diff default: unset means the tools aren't registered
-and this shell machinery simply never receives a `browser.action_request`.
+**Availability.** The embedded browser is always on in this build — the
+agent-side `browser_*` tools are registered whenever the AP/runner is running,
+and this shell machinery activates the moment a `browser.action_request`
+arrives. No flag to enable it. Outside the Electron shell (a plain browser tab)
+the renderer half is inert, so the tools fail cleanly with a "is the desktop
+app open?" error rather than hanging.
 
 ## Prerequisites
 
