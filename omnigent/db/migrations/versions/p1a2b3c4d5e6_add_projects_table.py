@@ -4,10 +4,16 @@ Revision ID: p1a2b3c4d5e6
 Revises: n1a2b3c4d5e6
 Create Date: 2026-07-01 00:00:00.000000
 
-Adds the ``projects`` table holding per-project metadata keyed by project
-name (the same string stored in the ``omni_project`` conversation label):
+Adds the ``projects`` table holding per-project metadata keyed by
+``(owner, name)`` (``name`` is the same string stored in the
+``omni_project`` conversation label):
 
-- ``name``: String PK — the project name / join key to membership labels.
+- ``owner``: String PK member — the owning user id, or the ``"local"``
+  single-user sentinel when auth is off. Metadata is owner-scoped so one
+  user cannot read/overwrite (and thus prompt-inject) another user's
+  same-named project.
+- ``name``: String PK member — the project name / join key to that user's
+  membership labels.
 - ``description``: nullable Text — standing instructions injected as a
   ``<project_instructions>`` block into member sessions' system prompt
   (the "functional projects" feature). ``Text`` so it can exceed the
@@ -39,12 +45,13 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.create_table(
         "projects",
+        sa.Column("owner", sa.String(length=128), nullable=False),
         sa.Column("name", sa.String(length=256), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("icon", sa.String(length=256), nullable=True),
         sa.Column("created_at", sa.Integer(), nullable=False),
         sa.Column("updated_at", sa.Integer(), nullable=False),
-        sa.PrimaryKeyConstraint("name"),
+        sa.PrimaryKeyConstraint("owner", "name"),
     )
 
 

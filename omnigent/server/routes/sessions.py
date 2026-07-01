@@ -157,6 +157,7 @@ from omnigent.server.auth import (
 from omnigent.server.bundles import bundle_location, validate_agent_bundle
 from omnigent.server.functional_projects import (
     functional_projects_enabled,
+    project_owner,
     render_project_instructions,
 )
 from omnigent.server.host_registry import HostConnection, HostRegistry, RunnerExitReports
@@ -8719,10 +8720,27 @@ async def _forward_event_to_runner(
     # projects row, or an empty/whitespace description ⇒ the field is
     # never set ⇒ runner_body is byte-identical to today. Only user
     # messages carry instructions; other event types are untouched.
+    #
+    # ISOLATION: metadata is owner-scoped, and the lookup keys on the
+    # SESSION OWNER (creator), not the message sender. So a session picks
+    # up only its owner's project instructions; a different user's
+    # coincidentally same-named project is never injected here — closing
+    # the cross-tenant prompt-injection hole. Owner is resolved from the
+    # session's permission grants (root session for sub-agents), falling
+    # back to the "local" sentinel in single-user mode.
     if functional_projects_enabled() and body.type == "message":
         _proj = conv.labels.get(PROJECT_LABEL_KEY)
         if _proj:
-            _proj_rec = await asyncio.to_thread(conversation_store.get_project, _proj)
+            _owner_uid = await asyncio.to_thread(
+                conversation_store.get_session_owner, conv.id
+            )
+            if _owner_uid is None and conv.root_conversation_id != conv.id:
+                _owner_uid = await asyncio.to_thread(
+                    conversation_store.get_session_owner, conv.root_conversation_id
+                )
+            _proj_rec = await asyncio.to_thread(
+                conversation_store.get_project, project_owner(_owner_uid), _proj
+            )
             if _proj_rec is not None and _proj_rec.description and _proj_rec.description.strip():
                 _block = render_project_instructions(_proj_rec.description.strip())
                 _existing = runner_body.get("per_request_instructions")
@@ -14144,9 +14162,18 @@ def create_sessions_router(
                 conversation_store.list_projects,
                 accessible_by=user_id,
             )
+        # detail=true surfaces descriptions, which only exist as a feature
+        # when the flag is on — gate the enriched read so the surface is
+        # zero when off (the plain names path above stays available).
+        if not functional_projects_enabled():
+            raise OmnigentError(
+                "functional projects are not enabled",
+                code=ErrorCode.NOT_FOUND,
+            )
         rows = await asyncio.to_thread(
             conversation_store.list_projects_detailed,
             accessible_by=user_id,
+            owner=project_owner(user_id),
         )
         return [
             ProjectDetailResponse(
@@ -14174,20 +14201,28 @@ def create_sessions_router(
         """
         Return one project's details, including its description.
 
-        Resolves against the same ACL-filtered union as the detailed
-        list: a project is visible if the caller can access at least one
-        of its member sessions, OR it exists as an explicit ``projects``
-        row. Returns ``404`` when neither holds.
+        Flag-gated (404 when off). Resolves against the OWNER-SCOPED union:
+        a project is visible if the caller can access at least one of its
+        member sessions OR owns an explicit ``projects`` row for that name.
+        Another user's same-named project is never returned. ``404`` when
+        neither condition holds for the caller.
 
         :param request: The incoming FastAPI request (for auth).
         :param name: The project name, e.g. ``"my-project"``.
         :returns: The matching :class:`ProjectDetailResponse`.
-        :raises OmnigentError: 404 if the project is not visible.
+        :raises OmnigentError: 404 if the feature is off or the project is
+            not visible to the caller.
         """
+        if not functional_projects_enabled():
+            raise OmnigentError(
+                f"project not found: {name}",
+                code=ErrorCode.NOT_FOUND,
+            )
         user_id = _require_user(request, auth_provider)
         rows = await asyncio.to_thread(
             conversation_store.list_projects_detailed,
             accessible_by=user_id,
+            owner=project_owner(user_id),
         )
         match = next((r for r in rows if r.name == name), None)
         if match is None:
@@ -14214,14 +14249,16 @@ def create_sessions_router(
         body: ProjectUpdateRequest,
     ) -> ProjectDetailResponse:
         """
-        Upsert a project's metadata (description / icon).
+        Upsert the caller's project metadata (description / icon).
 
         Gated on ``OMNIGENT_FUNCTIONAL_PROJECTS`` — returns ``404`` when
         the feature is off, so a flag-off build behaves as though the
         route does not exist. Requires the project to be visible to the
-        caller (same ACL union as GET), so a user can't create metadata
-        for a project they can't see; a brand-new explicit project the
-        caller just created via a session label is visible immediately.
+        caller (same OWNER-SCOPED union as GET), so a user can't create or
+        overwrite metadata for a project they can't see; a brand-new
+        explicit project the caller just created via a session label is
+        visible immediately. The upsert writes under the caller's own
+        ``owner`` key, so it can never touch another user's row.
 
         :param request: The incoming FastAPI request (for auth).
         :param name: The project name, e.g. ``"my-project"``.
@@ -14236,9 +14273,11 @@ def create_sessions_router(
                 code=ErrorCode.NOT_FOUND,
             )
         user_id = _require_user(request, auth_provider)
+        owner = project_owner(user_id)
         rows = await asyncio.to_thread(
             conversation_store.list_projects_detailed,
             accessible_by=user_id,
+            owner=owner,
         )
         match = next((r for r in rows if r.name == name), None)
         if match is None:
@@ -14248,6 +14287,7 @@ def create_sessions_router(
             )
         await asyncio.to_thread(
             conversation_store.upsert_project,
+            owner,
             name,
             description=body.description,
             icon=body.icon,
@@ -14257,6 +14297,7 @@ def create_sessions_router(
         rows = await asyncio.to_thread(
             conversation_store.list_projects_detailed,
             accessible_by=user_id,
+            owner=owner,
         )
         updated = next((r for r in rows if r.name == name), match)
         return ProjectDetailResponse(

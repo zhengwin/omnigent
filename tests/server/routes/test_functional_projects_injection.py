@@ -79,7 +79,8 @@ async def test_injects_block_when_flag_on_and_description_set(
     store = SqlAlchemyConversationStore(db_uri)
     conv = store.create_conversation()
     store.set_labels(conv.id, {"omni_project": "Proj"})
-    store.upsert_project("Proj", description="Always write TypeScript.")
+    # Single-user session ⇒ owner resolves to the "local" sentinel.
+    store.upsert_project("local", "Proj", description="Always write TypeScript.")
 
     body = await _forward(store, conv.id)
 
@@ -101,7 +102,7 @@ async def test_zero_diff_when_flag_off(
     store = SqlAlchemyConversationStore(db_uri)
     conv = store.create_conversation()
     store.set_labels(conv.id, {"omni_project": "Proj"})
-    store.upsert_project("Proj", description="Always write TypeScript.")
+    store.upsert_project("local", "Proj", description="Always write TypeScript.")
 
     body = await _forward(store, conv.id)
 
@@ -127,7 +128,7 @@ async def test_zero_diff_when_flag_on_but_no_description(
     # (b) explicit row but whitespace-only description.
     conv_b = store.create_conversation()
     store.set_labels(conv_b.id, {"omni_project": "Blank"})
-    store.upsert_project("Blank", description="   ")
+    store.upsert_project("local", "Blank", description="   ")
     body_b = await _forward(store, conv_b.id)
     assert "per_request_instructions" not in body_b
 
@@ -145,6 +146,46 @@ async def test_zero_diff_when_session_has_no_project(
     body = await _forward(store, conv.id)
 
     assert "per_request_instructions" not in body
+
+
+@pytest.mark.asyncio
+async def test_injection_is_owner_isolated(
+    db_uri: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SECURITY (the test that proves the fix): user B's session filed under
+    a project with the SAME NAME as user A's must NOT receive A's
+    ``<project_instructions>`` block. Injection keys on the session owner +
+    owner-scoped metadata, so A's description never crosses into B's turn.
+    A's own session still gets A's block."""
+    from omnigent.stores.permission_store.sqlalchemy_store import (
+        SqlAlchemyPermissionStore,
+    )
+
+    monkeypatch.setenv("OMNIGENT_FUNCTIONAL_PROJECTS", "1")
+    store = SqlAlchemyConversationStore(db_uri)
+    perms = SqlAlchemyPermissionStore(db_uri)
+    for user in ("alice@example.com", "bob@example.com"):
+        perms.ensure_user(user)
+
+    # Alice owns a "Shared" project with a secret instruction.
+    alice_conv = store.create_conversation()
+    store.set_labels(alice_conv.id, {"omni_project": "Shared"})
+    perms.grant("alice@example.com", alice_conv.id, 4)  # LEVEL_OWNER
+    store.upsert_project("alice@example.com", "Shared", description="ALICE ONLY SECRET")
+
+    # Bob has his own same-named "Shared" session, no metadata row.
+    bob_conv = store.create_conversation()
+    store.set_labels(bob_conv.id, {"omni_project": "Shared"})
+    perms.grant("bob@example.com", bob_conv.id, 4)
+
+    # Bob's turn must NOT carry Alice's block.
+    bob_body = await _forward(store, bob_conv.id)
+    assert "per_request_instructions" not in bob_body
+
+    # Alice's own turn still gets her block.
+    alice_body = await _forward(store, alice_conv.id)
+    assert "ALICE ONLY SECRET" in (alice_body.get("per_request_instructions") or "")
 
 
 def test_runner_threads_per_request_instructions_into_system_prompt() -> None:

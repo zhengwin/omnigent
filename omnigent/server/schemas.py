@@ -2015,13 +2015,15 @@ class ProjectUpdateRequest(BaseModel):
     (the row's ``updated_at`` still advances).
 
     :param description: New standing-instructions text, or ``null`` to
-        leave unchanged. Empty string clears it.
+        leave unchanged. Empty string clears it. Capped at 8000 chars —
+        it is injected into every member session's system prompt, so an
+        unbounded value is per-turn prompt bloat; overflow is a 422.
     :param icon: New icon id, or ``null`` to leave unchanged. Empty string
         clears it.
     """
 
-    description: str | None = None
-    icon: str | None = None
+    description: str | None = Field(default=None, max_length=8000)
+    icon: str | None = Field(default=None, max_length=256)
 
     model_config = ConfigDict(extra="forbid")
 

@@ -1564,18 +1564,21 @@ class SqlAlchemyConversationStore(ConversationStore):
     def list_projects_detailed(
         self,
         accessible_by: str | None = None,
+        owner: str | None = None,
     ) -> list[ProjectDetail]:
         """
         Return every project with metadata + member-session count.
 
-        UNION of implicit (label-only) projects and explicit ``projects``
-        rows — see the base-class contract. Implemented as a Python-side
-        merge of two cheap queries rather than a single SQL FULL OUTER
-        JOIN (SQLite has no FULL OUTER JOIN), which keeps the query
-        portable across SQLite + Postgres.
+        UNION of implicit (label-only) projects and the caller's explicit
+        ``projects`` rows — see the base-class contract. Implemented as a
+        Python-side merge of two cheap queries rather than a single SQL
+        FULL OUTER JOIN (SQLite has no FULL OUTER JOIN), which keeps the
+        query portable across SQLite + Postgres.
 
         :param accessible_by: When set, restrict the implicit-project set
             and the session counts to sessions the user can access.
+        :param owner: When set, restrict explicit metadata rows to this
+            owner (isolation boundary). ``None`` lists rows across owners.
         :returns: List of :class:`ProjectDetail` ordered by name.
         """
         with self._session() as session:
@@ -1610,9 +1613,13 @@ class SqlAlchemyConversationStore(ConversationStore):
                 row[0]: row[1] for row in session.execute(count_stmt).all()
             }
 
-            # 2) All explicit metadata rows.
+            # 2) The caller's OWN explicit metadata rows. Owner-scoped so
+            #    another user's same-named row never leaks its metadata.
+            meta_stmt = select(SqlProject)
+            if owner is not None:
+                meta_stmt = meta_stmt.where(SqlProject.owner == owner)
             meta: dict[str, SqlProject] = {
-                row.name: row for row in session.execute(select(SqlProject)).scalars().all()
+                row.name: row for row in session.execute(meta_stmt).scalars().all()
             }
 
             # 3) Union the two name sets and build the detail records.
@@ -1629,18 +1636,20 @@ class SqlAlchemyConversationStore(ConversationStore):
             details.sort(key=lambda d: d.name)
             return details
 
-    def get_project(self, name: str) -> ProjectRecord | None:
+    def get_project(self, owner: str, name: str) -> ProjectRecord | None:
         """
-        Return the ``projects`` metadata row for *name*, or ``None``.
+        Return the owner's ``projects`` row for *name*, or ``None``.
 
-        :param name: The project name / primary key.
+        :param owner: The owning user id, or the ``"local"`` sentinel.
+        :param name: The project name.
         :returns: The :class:`ProjectRecord`, or ``None`` when no row.
         """
         with self._session() as session:
-            row = session.get(SqlProject, name)
+            row = session.get(SqlProject, (owner, name))
             if row is None:
                 return None
             return ProjectRecord(
+                owner=row.owner,
                 name=row.name,
                 description=row.description,
                 icon=row.icon,
@@ -1650,27 +1659,30 @@ class SqlAlchemyConversationStore(ConversationStore):
 
     def upsert_project(
         self,
+        owner: str,
         name: str,
         description: str | None = None,
         icon: str | None = None,
     ) -> ProjectRecord:
         """
-        Create or update the ``projects`` metadata row for *name*.
+        Create or update the owner's ``projects`` row for *name*.
 
         Insert-or-update with per-field patch semantics: an omitted
         (``None``) argument leaves the existing column untouched; an empty
         string clears the field. ``updated_at`` is always refreshed.
 
-        :param name: The project name / primary key.
+        :param owner: The owning user id, or the ``"local"`` sentinel.
+        :param name: The project name.
         :param description: New description, ``None`` to leave unchanged.
         :param icon: New icon id, ``None`` to leave unchanged.
         :returns: The resulting :class:`ProjectRecord`.
         """
         now = now_epoch()
         with self._session() as session:
-            row = session.get(SqlProject, name)
+            row = session.get(SqlProject, (owner, name))
             if row is None:
                 row = SqlProject(
+                    owner=owner,
                     name=name,
                     description=description,
                     icon=icon,
@@ -1686,6 +1698,7 @@ class SqlAlchemyConversationStore(ConversationStore):
                 row.updated_at = now
             session.flush()
             return ProjectRecord(
+                owner=row.owner,
                 name=row.name,
                 description=row.description,
                 icon=row.icon,

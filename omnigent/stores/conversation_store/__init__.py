@@ -167,7 +167,12 @@ class ProjectRecord:
     exists. ``get_project`` returns ``None`` for an implicit (label-only)
     project that has no metadata row yet.
 
-    :param name: The project name / primary key, e.g. ``"my-project"``.
+    Metadata is owner-scoped: the record belongs to one ``owner``, so a
+    same-named project owned by another user is a distinct record.
+
+    :param owner: The owning user id, or the ``"local"`` sentinel in
+        single-user mode.
+    :param name: The project name, e.g. ``"my-project"``.
     :param description: Standing instructions injected into member
         sessions' system prompt, or ``None`` when unset.
     :param icon: Optional icon id for the projects UI, or ``None``.
@@ -175,6 +180,7 @@ class ProjectRecord:
     :param updated_at: Unix epoch seconds of the last write.
     """
 
+    owner: str
     name: str
     description: str | None
     icon: str | None
@@ -806,6 +812,7 @@ class ConversationStore(ABC):
     def list_projects_detailed(
         self,
         accessible_by: str | None = None,
+        owner: str | None = None,
     ) -> list[ProjectDetail]:
         """
         Return every project with metadata + member-session count.
@@ -817,30 +824,36 @@ class ConversationStore(ABC):
           *non-archived* ``conversation_labels`` row ``key="omni_project"``
           (the same set :meth:`list_projects` returns). ``description``
           and ``icon`` are ``None`` unless a ``projects`` row exists.
-        - **Explicit rows** — every ``projects`` table row, even one with
-          zero member sessions (``session_count == 0``), so a project
+        - **Explicit rows** — the caller's own ``projects`` rows, even one
+          with zero member sessions (``session_count == 0``), so a project
           created via the page appears before it has any sessions.
 
         :param accessible_by: When set, restrict the session-count (and
             the implicit-project set) to sessions the user has a
             permission row for, mirroring :meth:`list_projects`.
-            Explicit ``projects`` rows are always listed regardless of
-            ACL — they carry no session-level content, only metadata.
+        :param owner: When set, restrict explicit ``projects`` rows to
+            those owned by this user id — metadata is owner-scoped, so
+            another user's same-named row never contributes its
+            description/icon. ``None`` returns explicit rows across all
+            owners (admin/no-auth callers only).
         :returns: List of :class:`ProjectDetail`, ordered by name.
         """
         ...
 
     @abstractmethod
-    def get_project(self, name: str) -> ProjectRecord | None:
+    def get_project(self, owner: str, name: str) -> ProjectRecord | None:
         """
-        Return the ``projects`` metadata row for *name*, or ``None``.
+        Return the owner's ``projects`` metadata row for *name*, or ``None``.
 
-        ``None`` means no metadata row exists yet — the project may still
-        exist implicitly (label-only). Callers that only need the
-        description (e.g. prompt injection) treat ``None`` as "no
-        description", which is the zero-diff default.
+        ``None`` means no metadata row exists for this ``(owner, name)`` —
+        the project may still exist implicitly (label-only), or belong to a
+        different owner. Callers that only need the description (e.g. prompt
+        injection) treat ``None`` as "no description", the zero-diff
+        default. Owner-scoping is the isolation boundary: passing another
+        user's session owner never returns this user's row.
 
-        :param name: The project name / primary key, e.g. ``"my-project"``.
+        :param owner: The owning user id, or the ``"local"`` sentinel.
+        :param name: The project name, e.g. ``"my-project"``.
         :returns: The :class:`ProjectRecord`, or ``None`` when absent.
         """
         ...
@@ -848,21 +861,24 @@ class ConversationStore(ABC):
     @abstractmethod
     def upsert_project(
         self,
+        owner: str,
         name: str,
         description: str | None = None,
         icon: str | None = None,
     ) -> ProjectRecord:
         """
-        Create or update the ``projects`` metadata row for *name*.
+        Create or update the owner's ``projects`` metadata row for *name*.
 
-        Insert when no row exists (stamping ``created_at``); otherwise
-        update in place. Only the fields explicitly passed are written —
-        an omitted (``None``) argument leaves the existing column value
-        untouched on update, so callers can patch just the description or
-        just the icon. To *clear* a field, callers pass an empty string.
-        ``updated_at`` is refreshed on every call.
+        Insert when no ``(owner, name)`` row exists (stamping
+        ``created_at``); otherwise update in place. Only the fields
+        explicitly passed are written — an omitted (``None``) argument
+        leaves the existing column value untouched on update, so callers
+        can patch just the description or just the icon. To *clear* a
+        field, callers pass an empty string. ``updated_at`` is refreshed
+        on every call.
 
-        :param name: The project name / primary key.
+        :param owner: The owning user id, or the ``"local"`` sentinel.
+        :param name: The project name.
         :param description: New description, or ``None`` to leave
             unchanged. Empty string clears it.
         :param icon: New icon id, or ``None`` to leave unchanged. Empty
