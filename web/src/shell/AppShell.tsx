@@ -11,7 +11,13 @@ import { useSeedReadState } from "@/hooks/useUnseenConversations";
 import { useIOSViewportLock } from "@/hooks/useIOSViewportLock";
 import { readFilesPanelPreferences, writeFilesPanelPreferences } from "@/lib/filesPanelPreferences";
 import { derivePermissionLevel, isOwnerLevel } from "@/lib/permissionsApi";
-import { isIOSShell, isMacElectronShell, onNativeSidebarDrag } from "@/lib/nativeBridge";
+import {
+  isElectronShell,
+  isIOSShell,
+  isMacElectronShell,
+  onNativeSidebarDrag,
+} from "@/lib/nativeBridge";
+import { onBrowserActionRequest } from "@/lib/browserActionBus";
 import { readSessionWorkspaceState, writeSessionWorkspaceState } from "@/lib/sessionWorkspaceState";
 import {
   Dialog,
@@ -28,6 +34,7 @@ import {
   useChildSessions,
 } from "@/hooks/useChildSessions";
 import { useDebugMode } from "@/hooks/useDebugMode";
+import { useBrowserAgentRelay } from "@/hooks/useBrowserAgentRelay";
 import {
   AGENT_TERMINAL_IDS,
   inventoryTerminals,
@@ -446,6 +453,10 @@ export function AppShell() {
     () =>
       ({
         files: showFilesPanel,
+        // Browser tab: Electron shell only — that's where the embedded
+        // WebContentsView lives. A plain web build has no embedded browser, so
+        // the tab is hidden entirely (isElectronShell() is constant per load).
+        browser: isElectronShell(),
         // Agents tab is unconditional: the panel always lists at least
         // the main agent (its "main" row), so there's never a dead end.
         subagents: true,
@@ -483,11 +494,34 @@ export function AppShell() {
   // convergent even when several tabs vanish at once.
   useEffect(() => {
     if (railTabsAvailable[rightRailTab]) return;
-    const next = (["files", "subagents", "terminals", "todos"] as const).find(
+    const next = (["files", "browser", "subagents", "terminals", "todos"] as const).find(
       (t) => railTabsAvailable[t],
     );
     if (next) setRightRailTab(next);
   }, [railTabsAvailable, rightRailTab]);
+
+  // Mount the embedded-browser agent relay at the always-present shell level —
+  // NOT inside BrowserPane. BrowserPane only mounts while the Browser tab is
+  // selected, but the relay must be listening before the first browser_navigate
+  // (which is also what auto-selects that tab, below). No-op outside Electron
+  // or with no conversation. Owns the claim→execute→result flow for the view.
+  useBrowserAgentRelay(conversationId);
+
+  // Auto-surface the Browser tab when the agent navigates. Without this a
+  // `browser_navigate` while another tab is selected would load the page into a
+  // pane the user can't see. We react to the `browser_action_request` SSE event
+  // (the same signal the relay claims) for a `navigate` action: open the rail
+  // and select the Browser tab so the empty→loading→page transition is visible.
+  // Electron-only (the Browser tab only exists there); a no-op elsewhere since
+  // the bus never fires without a mounted relay.
+  useEffect(() => {
+    if (!isElectronShell()) return;
+    return onBrowserActionRequest((evt) => {
+      if (evt.action !== "navigate") return;
+      setRightRailTab("browser");
+      setRightPanelOpen(true);
+    });
+  }, []);
 
   // Build a stable Set of agent-changed file paths so the FileViewer context
   // can tell BlockRenderer which inline code spans are real workspace files.
@@ -1165,6 +1199,7 @@ export function AppShell() {
                       rightRailTab={rightRailTab}
                       onRightRailTabChange={handleRightRailTabChange}
                       showFilesPanel={showFilesPanel}
+                      showBrowserTab={railTabsAvailable.browser}
                       changedCount={changedCount}
                       showShellsTab={railTabsAvailable.terminals}
                       terminalsLength={railTerminals.length}

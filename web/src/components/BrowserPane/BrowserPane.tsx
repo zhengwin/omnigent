@@ -11,25 +11,26 @@
  *  real Chromium page (screenshot, execute relay JS, cross-origin navigation)
  *  which an iframe can't provide, and Electron's `<webview>` is deprecated.
  *
- *  Two responsibilities, deliberately kept in one mounted component:
- *   1. Always keep the agent relay (`useBrowserAgentRelay`) alive for the
- *      conversation — the FIRST `browser_navigate` action is what creates the
- *      view, so the relay must be listening before any view exists.
- *   2. In the Electron shell the pane is ALWAYS visible and occupies its half of
- *      the row. Before a view is attached (`viewActive` false) it shows a
- *      centered empty state; once a view IS attached it renders the measuring
- *      placeholder the native WebContentsView paints over. The bounds-sync
- *      machinery (containerRef + syncBounds + rAF/ResizeObserver effects) is
- *      gated on `viewActive`, so nothing measures an empty-state div.
+ *  Lives as the "Browser" tab inside the right Workspace rail (WorkspacePanel),
+ *  so it only mounts while that tab is selected. Before a view is attached
+ *  (`viewActive` false) it shows a centered empty state; once a view IS attached
+ *  it renders the measuring placeholder the native WebContentsView paints over.
+ *  The bounds-sync machinery (containerRef + syncBounds + rAF/ResizeObserver
+ *  effects) is gated on `viewActive`, so nothing measures an empty-state div.
+ *
+ *  The agent relay is NOT here — because this component only mounts while its
+ *  tab is selected, but the relay must be listening before the first
+ *  `browser_navigate` (which also auto-selects the tab). The relay is hoisted to
+ *  AppShell, which is always mounted for a session. This component only
+ *  positions/paints the view.
  *
  *  DETACH-not-destroy on unmount: the view keeps running (a background agent's
- *  page survives a pane switch); it is destroyed only on explicit close.
+ *  page survives a tab switch); it is destroyed only on explicit close.
  *
- *  Gated on `isElectronShell()` — in a plain browser this renders nothing (no
- *  empty split pane in the web build) and the relay is a no-op. */
+ *  Gated on `isElectronShell()` — in a plain browser this renders nothing (the
+ *  Browser tab isn't shown there anyway). */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isElectronShell } from "@/lib/nativeBridge";
-import { useBrowserAgentRelay } from "@/hooks/useBrowserAgentRelay";
 
 /** Renderer CSS-pixel bounds pushed to the main process (converted to window
  *  DIPs there via the host zoom factor). */
@@ -91,10 +92,11 @@ export function BrowserPane({ conversationId, className }: BrowserPaneProps) {
   // the moment it's closed — no empty pane on an idle conversation.
   const [viewActive, setViewActive] = useState(false);
 
-  // Mount the relay for this conversation (no-op outside Electron). Always live
-  // — the first browser_navigate creates the view, so the relay must be
-  // listening before `viewActive` ever flips true.
-  useBrowserAgentRelay(conversationId);
+  // NOTE: the agent relay is NOT mounted here. BrowserPane only mounts when the
+  // Browser tab is selected, but the relay must be listening BEFORE the first
+  // browser_navigate (which is also what auto-selects the tab). So the relay is
+  // hoisted to AppShell (`useBrowserAgentRelay(conversationId)`), which is
+  // always mounted for a session. See AppShell.
 
   // Decide when a view EXISTS for this conversation, so the placeholder mounts
   // exactly then. Three signals feed `viewActive`:
@@ -281,8 +283,7 @@ export function BrowserPane({ conversationId, className }: BrowserPaneProps) {
         />
       ) : (
         <div className="flex h-full flex-1 items-center justify-center bg-card px-6 py-8 text-center text-muted-foreground text-sm">
-          No page open — the agent will open pages here, or navigate to get
-          started.
+          No page open yet — the agent will open pages here.
         </div>
       )}
     </div>
