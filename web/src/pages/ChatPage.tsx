@@ -52,6 +52,7 @@ import {
   MessageContent,
 } from "@/components/ai-elements/message";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import { BrowserPane } from "@/components/BrowserPane/BrowserPane";
 import { ElicitationCard } from "@/components/blocks/ApprovalCard";
 import { BlockRenderer, FilePathAwareMessageResponse } from "@/components/blocks/BlockRenderer";
 import { CompactionMarker, RoutingDecisionChip } from "@/components/blocks/StatusBlocks";
@@ -1101,7 +1102,7 @@ export function ChatPage() {
 
   return (
     <SessionSharedContext.Provider value={isSessionShared}>
-      <SessionLayout mainAgent={mainAgent} />
+      <SessionLayout mainAgent={mainAgent} conversationId={urlConvId} />
       <ReconnectSessionDialog
         open={reconnectDialogOpen}
         onOpenChange={setReconnectDialogOpen}
@@ -1134,17 +1135,27 @@ export function ChatPage() {
 
 interface SessionLayoutProps {
   mainAgent: React.ReactNode;
+  /** Active conversation id — drives the embedded browser pane (Phase 2). */
+  conversationId: string;
 }
 
 /**
  * Inside a conversation: wraps the chat surface. The terminals panel
  * and right rail are managed by AppShell and rendered outside this
  * component as flex siblings.
+ *
+ * The embedded browser pane (Phase 2) is a flex sibling of the chat column: it
+ * renders nothing until the agent's first `browser_navigate` creates a native
+ * WebContentsView, then occupies half the row as the measuring placeholder the
+ * native view paints over. It self-gates on `isElectronShell()` and on whether
+ * a view is attached for this conversation, so a plain browser tab or an idle
+ * conversation shows the chat full-width.
  */
-function SessionLayout({ mainAgent }: SessionLayoutProps) {
+function SessionLayout({ mainAgent, conversationId }: SessionLayoutProps) {
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
       <div className="flex min-w-0 flex-1 flex-col">{mainAgent}</div>
+      <BrowserPane conversationId={conversationId} className="border-border border-l" />
     </div>
   );
 }
