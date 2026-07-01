@@ -799,7 +799,7 @@ class SqlProject(Base):
     """
     SQLAlchemy model for the ``projects`` table.
 
-    Holds per-project *metadata* keyed by project name. Membership
+    Holds per-project *metadata* keyed by ``(owner, name)``. Membership
     stays where it always was — a session belongs to a project via its
     ``conversation_labels`` row ``key="omni_project"`` — so this table
     is purely additive: a project can exist as label rows with no
@@ -815,9 +815,24 @@ class SqlProject(Base):
     ``conversation_labels.value`` and lives at the project level, not on
     each session — so it needs its own home.
 
-    :param name: The project name, e.g. ``"my-project"``. Primary key;
-        this is the same string stored in the ``omni_project`` label
-        value, so it is the join key between metadata and membership.
+    OWNER-SCOPED for multi-user isolation. Omnigent projects are implicit
+    per-user label values with no shared membership registry — two users
+    can independently use the same project name. If metadata were keyed by
+    ``name`` alone, any authenticated user could read AND overwrite another
+    user's project description, and because the description is injected
+    into that user's session prompts, an overwrite is cross-tenant prompt
+    injection. Keying on ``(owner, name)`` makes each user's project
+    metadata private: a lookup resolves against the *session owner*, so a
+    coincidentally same-named project belonging to another user is never
+    read, written, or injected. ``owner`` is the authenticated user id, or
+    the reserved single-user ``"local"`` sentinel when auth is off.
+
+    :param owner: The owning user id, e.g. ``"alice@example.com"``, or
+        ``"local"`` in single-user / no-auth mode. Composite PK member.
+    :param name: The project name, e.g. ``"my-project"``. Composite PK
+        member; the same string stored in the ``omni_project`` label
+        value, so ``(owner, name)`` joins metadata to that user's
+        membership.
     :param description: Free-form standing instructions injected as a
         ``<project_instructions>`` block into member sessions' system
         prompt. ``NULL``/empty means no injection (zero-diff default).
@@ -830,6 +845,7 @@ class SqlProject(Base):
 
     __tablename__ = "projects"
 
+    owner: Mapped[str] = mapped_column(String(128), primary_key=True)
     name: Mapped[str] = mapped_column(String(256), primary_key=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     icon: Mapped[str | None] = mapped_column(String(256), nullable=True)

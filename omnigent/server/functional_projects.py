@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import os
 
+from omnigent.server.auth import RESERVED_USER_LOCAL
+
 # Env var that enables the feature. Read live (not cached at import) so a
 # test / deployment can toggle it via the environment without a restart —
 # matches how the rest of the OMNIGENT_* flags are consulted.
@@ -39,6 +41,23 @@ def functional_projects_enabled() -> bool:
     :returns: ``True`` iff ``OMNIGENT_FUNCTIONAL_PROJECTS == "1"``.
     """
     return os.environ.get(FUNCTIONAL_PROJECTS_ENV_VAR) == "1"
+
+
+def project_owner(user_id: str | None) -> str:
+    """
+    Normalize an auth identity into the ``projects.owner`` key.
+
+    Project metadata is owner-scoped, but ``require_user`` /
+    ``get_session_owner`` return ``None`` in single-user / no-auth mode.
+    Map that to the reserved ``"local"`` sentinel so a single-user
+    deployment has a stable, non-null owner key (all its projects share
+    one owner), while multi-user deployments key on the real user id.
+
+    :param user_id: The authenticated user id, or ``None`` (no auth /
+        single-user, or a session with no real owner grant).
+    :returns: The owner key: the user id, or ``"local"`` when ``None``.
+    """
+    return user_id if user_id is not None else RESERVED_USER_LOCAL
 
 
 def render_project_instructions(description: str) -> str:

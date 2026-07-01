@@ -4396,8 +4396,8 @@ def test_get_project_returns_none_for_implicit_project(
     injection relies on."""
     conv = conversation_store.create_conversation()
     conversation_store.set_labels(conv.id, {"omni_project": "Implicit"})
-    assert conversation_store.get_project("Implicit") is None
-    assert conversation_store.get_project("Never seen") is None
+    assert conversation_store.get_project("local", "Implicit") is None
+    assert conversation_store.get_project("local", "Never seen") is None
 
 
 def test_upsert_project_inserts_then_updates_with_patch_semantics(
@@ -4406,36 +4406,60 @@ def test_upsert_project_inserts_then_updates_with_patch_semantics(
     """``upsert_project`` inserts on first call, then patches: an omitted
     (``None``) field is left unchanged, an empty string clears it, and
     ``updated_at`` advances while ``created_at`` is preserved."""
-    rec = conversation_store.upsert_project("Proj", description="hello", icon="rocket")
-    assert (rec.name, rec.description, rec.icon) == ("Proj", "hello", "rocket")
+    rec = conversation_store.upsert_project("local", "Proj", description="hello", icon="rocket")
+    assert (rec.owner, rec.name, rec.description, rec.icon) == ("local", "Proj", "hello", "rocket")
     assert rec.created_at == rec.updated_at
 
     # Patch only the description; icon (omitted → None) must be untouched.
-    rec2 = conversation_store.upsert_project("Proj", description="world")
+    rec2 = conversation_store.upsert_project("local", "Proj", description="world")
     assert rec2.description == "world"
     assert rec2.icon == "rocket"
     assert rec2.created_at == rec.created_at  # creation stamp preserved
     assert rec2.updated_at >= rec.updated_at
 
     # Empty string clears the field (distinct from None = leave-unchanged).
-    rec3 = conversation_store.upsert_project("Proj", description="")
+    rec3 = conversation_store.upsert_project("local", "Proj", description="")
     assert rec3.description == ""
     assert rec3.icon == "rocket"
 
     # And the read path agrees.
-    got = conversation_store.get_project("Proj")
+    got = conversation_store.get_project("local", "Proj")
     assert got is not None
     assert (got.description, got.icon) == ("", "rocket")
+
+
+def test_projects_metadata_is_owner_scoped(
+    conversation_store: SqlAlchemyConversationStore,
+) -> None:
+    """SECURITY: two owners can hold same-named project rows independently.
+    One owner's get/upsert never reads or overwrites another owner's row —
+    this is the isolation boundary the injection path relies on."""
+    conversation_store.upsert_project("alice@example.com", "Shared", description="alice-secret")
+    conversation_store.upsert_project("bob@example.com", "Shared", description="bob-secret")
+
+    a = conversation_store.get_project("alice@example.com", "Shared")
+    b = conversation_store.get_project("bob@example.com", "Shared")
+    assert a is not None and a.description == "alice-secret"
+    assert b is not None and b.description == "bob-secret"
+
+    # A third user with no row for that name sees nothing.
+    assert conversation_store.get_project("carol@example.com", "Shared") is None
+
+    # Bob's upsert must not have clobbered Alice's row.
+    conversation_store.upsert_project("bob@example.com", "Shared", description="bob-edited")
+    assert conversation_store.get_project("alice@example.com", "Shared").description == (
+        "alice-secret"
+    )
 
 
 def test_list_projects_detailed_unions_implicit_and_explicit(
     conversation_store: SqlAlchemyConversationStore,
 ) -> None:
     """``list_projects_detailed`` is the UNION of implicit label-only
-    projects and explicit ``projects`` rows: a label-only project appears
-    with null metadata + its session count; a metadata row with zero
-    members still appears (``session_count == 0``); a project that is both
-    gets metadata AND a non-zero count."""
+    projects and the owner's explicit ``projects`` rows: a label-only
+    project appears with null metadata + its session count; a metadata row
+    with zero members still appears (``session_count == 0``); a project
+    that is both gets metadata AND a non-zero count."""
     # Implicit only: two sessions, no metadata row.
     a1 = conversation_store.create_conversation()
     a2 = conversation_store.create_conversation()
@@ -4445,12 +4469,14 @@ def test_list_projects_detailed_unions_implicit_and_explicit(
     # Both: a session AND a metadata row with a description.
     b1 = conversation_store.create_conversation()
     conversation_store.set_labels(b1.id, {"omni_project": "Both"})
-    conversation_store.upsert_project("Both", description="instructions", icon="star")
+    conversation_store.upsert_project("local", "Both", description="instructions", icon="star")
 
     # Explicit only: a metadata row created via the page, no members yet.
-    conversation_store.upsert_project("EmptyExplicit", description="future")
+    conversation_store.upsert_project("local", "EmptyExplicit", description="future")
 
-    by_name = {d.name: d for d in conversation_store.list_projects_detailed()}
+    by_name = {
+        d.name: d for d in conversation_store.list_projects_detailed(owner="local")
+    }
     assert set(by_name) == {"Implicit", "Both", "EmptyExplicit"}
 
     assert by_name["Implicit"].description is None
@@ -4465,8 +4491,29 @@ def test_list_projects_detailed_unions_implicit_and_explicit(
     assert by_name["EmptyExplicit"].session_count == 0
 
     # Ordered by name.
-    names = [d.name for d in conversation_store.list_projects_detailed()]
+    names = [d.name for d in conversation_store.list_projects_detailed(owner="local")]
     assert names == sorted(names)
+
+
+def test_list_projects_detailed_omits_other_owners_metadata(
+    conversation_store: SqlAlchemyConversationStore,
+) -> None:
+    """SECURITY: the detailed list only surfaces the caller's own explicit
+    rows. Another owner's same-named row must not leak its description into
+    the caller's view (it would otherwise appear on an implicit project of
+    the same name)."""
+    conv = conversation_store.create_conversation()
+    conversation_store.set_labels(conv.id, {"omni_project": "Shared"})
+    # A different user owns a metadata row for the same name.
+    conversation_store.upsert_project("other@example.com", "Shared", description="not yours")
+
+    by_name = {
+        d.name: d for d in conversation_store.list_projects_detailed(owner="local")
+    }
+    # "Shared" appears (implicit, via the label) but WITHOUT the other
+    # owner's description.
+    assert "Shared" in by_name
+    assert by_name["Shared"].description is None
 
 
 def test_list_projects_detailed_scoped_by_accessible_by(
@@ -4474,8 +4521,7 @@ def test_list_projects_detailed_scoped_by_accessible_by(
     db_uri: str,
 ) -> None:
     """``accessible_by`` restricts the implicit set + counts to sessions the
-    user can access; explicit metadata rows still list (they carry no
-    session content), with a count of only the accessible members."""
+    user can access."""
     from omnigent.stores.permission_store.sqlalchemy_store import (
         SqlAlchemyPermissionStore,
     )
@@ -4493,7 +4539,9 @@ def test_list_projects_detailed_scoped_by_accessible_by(
 
     by_name = {
         d.name: d
-        for d in conversation_store.list_projects_detailed(accessible_by="alice@example.com")
+        for d in conversation_store.list_projects_detailed(
+            accessible_by="alice@example.com", owner="alice@example.com"
+        )
     }
     # Alice sees only her implicit project; Theirs is filtered out.
     assert "Mine" in by_name
