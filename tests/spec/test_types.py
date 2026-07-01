@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from omnigent.spec.types import ExecutorSpec, RetryPolicy
+from omnigent.spec.types import AgentSpec, ExecutorSpec, RetryPolicy
 
 
 @pytest.mark.parametrize(
@@ -42,6 +42,11 @@ def test_harness_kind(executor: ExecutorSpec, expected: str) -> None:
     would mis-badge the agent.
     """
     assert executor.harness_kind == expected
+
+
+def test_agent_spec_create_toplevel_sessions_defaults_false() -> None:
+    """Top-level session creation is a distinct default-off privilege."""
+    assert AgentSpec(spec_version=1).create_toplevel_sessions is False
 
 
 def test_retry_policy_to_json_round_trips() -> None:

@@ -50,6 +50,7 @@ from omnigent.tools.builtins.read_skill_file import (
 from omnigent.tools.builtins.spawn import (
     SysSessionCloseTool,
     SysSessionCreateTool,
+    SysSessionCreateToplevelTool,
     SysSessionGetHistoryTool,
     SysSessionGetInfoTool,
     SysSessionListTool,
@@ -79,6 +80,7 @@ __all__ = [
     "SysReadInboxTool",
     "SysSessionCloseTool",
     "SysSessionCreateTool",
+    "SysSessionCreateToplevelTool",
     "SysSessionGetHistoryTool",
     "SysSessionGetInfoTool",
     "SysSessionListTool",

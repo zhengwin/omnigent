@@ -790,6 +790,10 @@ class AgentDef:
     # sub-agent types. Session reads are always on. YAML key:
     # ``spawn:``.
     spawn: bool = False
+    # Grant for spawning independent top-level sessions via
+    # sys_session_create_toplevel. This is separate from ``spawn`` because
+    # it creates sessions outside the caller's subtree.
+    create_toplevel_sessions: bool = False
     # Authority for the agent to share the session it runs in, via
     # sys_session_share — the SOLE enabler of that tool (independent of
     # spawn / declared agents, and unrelated to server-API / CLI

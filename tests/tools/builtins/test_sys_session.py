@@ -32,6 +32,8 @@ from omnigent.tools.builtins.spawn import (
     _HISTORY_DEFAULT_TAIL,
     _HISTORY_MAX_TAIL,
     SysSessionCloseTool,
+    SysSessionCreateTool,
+    SysSessionCreateToplevelTool,
     SysSessionGetHistoryTool,
     SysSessionListTool,
     SysSessionSendTool,
@@ -319,6 +321,28 @@ def test_close_schema_required_fields_and_no_extra_props() -> None:
     assert params["required"] == ["conversation_id"]
     assert params["additionalProperties"] is False
     assert set(params["properties"].keys()) == {"conversation_id"}
+
+
+def test_create_toplevel_schema_matches_child_create_shape() -> None:
+    """
+    ``sys_session_create_toplevel`` advertises the same args as
+    ``sys_session_create``: agent_id/config_path/title/message with no
+    schema-level required fields.
+    """
+    child_params = SysSessionCreateTool().get_schema()["function"]["parameters"]
+    toplevel_schema = SysSessionCreateToplevelTool().get_schema()
+    toplevel_params = toplevel_schema["function"]["parameters"]
+
+    assert toplevel_schema["function"]["name"] == "sys_session_create_toplevel"
+    assert set(toplevel_params["properties"]) == {
+        "agent_id",
+        "config_path",
+        "title",
+        "message",
+    }
+    assert toplevel_params["required"] == []
+    assert toplevel_params["additionalProperties"] is False
+    assert toplevel_params == child_params
 
 
 # ── Peek invoke tests ─────────────────────────────────────

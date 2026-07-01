@@ -1484,6 +1484,16 @@ class AgentSpec:  # type: ignore[explicit-any]  # params: dict[str, Any] field (
         ``sys_session_get_history`` / ``sys_session_get_info``)
         are always registered and are not affected by either
         opt-in.
+    :param create_toplevel_sessions: Whether the agent may spawn
+        top-level independent sessions OUTSIDE the caller's subtree:
+        registers ``sys_session_create_toplevel`` (launch an existing
+        agent by id or a custom locally-authored bundle via
+        ``config_path``). YAML key is ``create_toplevel_sessions:``
+        (top-level boolean, like ``spawn:``). **Defaults to
+        ``False``.** This is a distinct privilege grant from
+        ``spawn``, because it creates sidebar peers with their own
+        conversation tree rather than children that the caller's
+        ``sys_session_*`` read tools can monitor.
     :param agent_session_sharing: Authority for the agent to share the
         session it is running in, via ``sys_session_share``. YAML key is
         ``agent_session_sharing:`` (top-level, like ``spawn:``). This
@@ -1539,4 +1549,5 @@ class AgentSpec:  # type: ignore[explicit-any]  # params: dict[str, Any] field (
     terminals: dict[str, TerminalEnvSpec] | None = None
     timers: bool = False
     spawn: bool = False
+    create_toplevel_sessions: bool = False
     agent_session_sharing: SharePolicy = SharePolicy.NONE

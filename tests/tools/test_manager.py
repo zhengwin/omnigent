@@ -394,6 +394,7 @@ def test_session_reads_registered_but_writes_gated_without_opt_in() -> None:
     assert "sys_session_send" not in names
     assert "sys_session_close" not in names
     assert "sys_session_create" not in names
+    assert "sys_session_create_toplevel" not in names
     # Sharing has its OWN dedicated `share:` flag (default `none`), so it
     # is absent here even though this spec also lacks spawn/agents. A
     # regression registering it by default would let any prompt-injected
@@ -428,6 +429,28 @@ def test_spawn_flag_registers_write_tools_without_sub_agents() -> None:
     # register it. A regression coupling them would re-expose sharing to
     # every spawn-capable agent.
     assert "sys_session_share" not in names
+
+
+def test_create_toplevel_sessions_registers_above_spawn_early_return() -> None:
+    """
+    ``create_toplevel_sessions: true`` registers
+    ``sys_session_create_toplevel`` even with ``spawn: false`` and no
+    declared ``tools.agents``.
+
+    This pins the exact regression shape: registration must happen before
+    the spawn/tools.agents early return, because the top-level grant is not
+    child-spawn authority.
+    """
+    granted = AgentSpec(spec_version=1, create_toplevel_sessions=True, spawn=False)
+    granted_names = {s["function"]["name"] for s in ToolManager(granted).get_tool_schemas()}
+    assert "sys_session_create_toplevel" in granted_names
+    assert "sys_session_create" not in granted_names
+    assert "sys_session_send" not in granted_names
+    assert "sys_session_close" not in granted_names
+
+    denied = AgentSpec(spec_version=1, create_toplevel_sessions=False, spawn=False)
+    denied_names = {s["function"]["name"] for s in ToolManager(denied).get_tool_schemas()}
+    assert "sys_session_create_toplevel" not in denied_names
 
 
 def test_session_send_schema_drops_named_mode_without_sub_agents() -> None:

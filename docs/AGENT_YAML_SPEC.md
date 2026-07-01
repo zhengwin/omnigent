@@ -44,6 +44,7 @@ resolved from the YAML file's directory.
 | `async` | Optional | Whether async work tools are exposed. Defaults to `true`. |
 | `cancellable` | Optional | Whether the session can be cancelled. Defaults to `true`. |
 | `timers` | Optional | Whether timer tools are exposed. Defaults to `false`. |
+| `create_toplevel_sessions` | Optional | Whether `sys_session_create_toplevel` is exposed. Defaults to `false`. |
 
 ## Executor
 
@@ -294,6 +295,16 @@ tools:
 
 Use `tools.<name>: inherit` to inherit a tool from a parent agent, or
 `tools.<name>: self` / `spec: self` for a sub-agent that clones the parent spec.
+
+### Top-level session creation
+
+Set `create_toplevel_sessions: true` only for agents that need to create
+independent sidebar-peer sessions, not child/sub-agent sessions under their own
+conversation tree. This exposes `sys_session_create_toplevel`, a fire-and-forget
+tool whose created sessions are outside the caller's `sys_session_*` read view.
+
+Phase-1 MVP support is valid under header auth mode with
+`OMNIGENT_LOCAL_SINGLE_USER=1`; managed/hosted top-level spawn is deferred to v2.
 
 ## Policies
 
