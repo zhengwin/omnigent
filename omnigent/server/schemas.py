@@ -1132,6 +1132,9 @@ class SessionCreateRequest(BaseModel):
         When set, the server inherits the parent's ``runner_id``
         affinity and sets ``parent_conversation_id`` on the child
         conversation. ``None`` for top-level sessions.
+    :param runner_affinity_id: caller-owned runner to co-locate a
+        top-level (parentless) session on; fail-closed validated;
+        IGNORED when parent_session_id is set.
     :param sub_agent_name: For sub-agent sessions, the sub-agent
         type name within the parent's spec tree, e.g.
         ``"summarizer"``. The runner uses this to load the correct
@@ -1228,6 +1231,7 @@ class SessionCreateRequest(BaseModel):
     title: str | None = None
     labels: dict[str, str] = Field(default_factory=dict)
     parent_session_id: str | None = None
+    runner_affinity_id: str | None = None
     sub_agent_name: str | None = None
     host_type: Literal["external", "managed"] = "external"
     host_id: str | None = None
@@ -1346,6 +1350,9 @@ class SessionCreateMetadata(BaseModel):
         inherits the parent's runner binding for co-location. The
         caller must have READ access to the parent. ``None``
         creates a top-level session.
+    :param runner_affinity_id: caller-owned runner to co-locate a
+        top-level (parentless) session on; fail-closed validated;
+        IGNORED when parent_session_id is set.
     """
 
     title: str | None = None
@@ -1355,6 +1362,7 @@ class SessionCreateMetadata(BaseModel):
     workspace: str | None = None
     terminal_launch_args: list[str] | None = None
     parent_session_id: str | None = None
+    runner_affinity_id: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 
