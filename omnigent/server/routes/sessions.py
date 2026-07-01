@@ -196,6 +196,7 @@ from omnigent.server.routes._host_worktree import CreatedWorktree
 from omnigent.server.routes._origin import require_trusted_origin
 from omnigent.server.schemas import (
     AgentObject,
+    BrowserActionRequestEvent,
     ChildSessionList,
     ChildSessionSummary,
     CompletedEvent,
@@ -569,6 +570,46 @@ _HOST_LAUNCH_RESULT_TIMEOUT_S = 10.0
 # the wait first. Empty 2xx body on timeout → Claude defers to its
 # built-in prompt (fail-ask).
 _CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_S = 86400.0
+
+# ── Embedded-browser action bridge ──────────────────────────────────
+# In-process registries bridging a runner-side ``browser_*`` tool POST
+# (parked on a server-side Future) to the desktop renderer that
+# actually drives the embedded browser. Mirrors the harness-elicitation
+# registries (``_harness_elicitation_registry`` / ``_owners``): the
+# runner POSTs ``/browser/action_request`` and awaits; the AP publishes
+# a ``browser.action_request`` event; the winning renderer claims and
+# POSTs the result to ``/browser/action_result/{action_id}``, which
+# resolves the Future. Keyed by ``action_id``.
+#
+# ``_browser_action_registry``: action_id -> parked Future the request
+#     route awaits and the result route resolves.
+# ``_browser_action_owners``: action_id -> session_id that issued it,
+#     so a result POST from a different session is rejected.
+# ``_browser_action_claims``: action_id -> claim_token minted for the
+#     winning claimant. The claim lease (one token per action) prevents
+#     double execution when multiple renderers are subscribed to the
+#     same session stream (design Risk-1). The result POST must present
+#     the matching token.
+_browser_action_registry: dict[str, asyncio.Future[dict[str, Any]]] = {}
+_browser_action_owners: dict[str, str] = {}
+_browser_action_claims: dict[str, str] = {}
+
+# AP-side wait budget for a browser action. Interactive nav/snapshot/
+# click/type/screenshot — kept short (matches SP2K's browser tool
+# budget) and FAR below the 1-day human-approval budget (no human in
+# the loop). MUST be shorter than the runner's outer read timeout
+# (``_BROWSER_ACTION_TIMEOUT`` = 60s in tool_dispatch.py) so the AP
+# returns its own clean timeout JSON before the runner severs the POST
+# (design Risk-4 "timeout budget").
+_BROWSER_ACTION_AWAIT_S = 30.0
+
+# Returned (HTTP 200) when the browser-action await elapses with no
+# renderer result — e.g. the desktop app isn't open or no renderer is
+# subscribed. Matches the runner-side timeout JSON so the LLM sees one
+# consistent, actionable error.
+_BROWSER_ACTION_TIMEOUT_RESULT: dict[str, Any] = {
+    "error": "browser action timed out — is the session open in the Omnigent desktop app?"
+}
 
 # Tools whose prompts get the "Accept & allow all edits" UI affordance —
 # the exact set ``acceptEdits`` mode auto-approves.
@@ -18024,6 +18065,194 @@ def create_sessions_router(
         await _validate_session(session_id, request, LEVEL_READ)
         path = f"/v1/sessions/{session_id}/resources/{resource_id}"
         return await _proxy_get_to_runner(session_id, path)
+
+    # ── Embedded-browser action bridge ───────────────────────────
+
+    @router.post(
+        "/sessions/{session_id}/browser/action_request",
+        # Internal embedded-browser flow — hidden from the public API reference.
+        include_in_schema=False,
+        response_model=None,
+    )
+    async def browser_action_request(
+        request: Request,
+        session_id: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Park one embedded-browser action and wait for the renderer result.
+
+        Mirrors :func:`_publish_and_wait_for_harness_elicitation`: mint an
+        ``action_id``, park a server-side Future in
+        ``_browser_action_registry`` owned by ``session_id``, publish a
+        ``browser.action_request`` event on the session stream, and await
+        the Future for up to ``_BROWSER_ACTION_AWAIT_S``. The winning
+        renderer claims via ``/browser/action_claim/{action_id}`` and POSTs
+        the result to ``/browser/action_result/{action_id}``, which resolves
+        the Future. Returns the renderer's result JSON, or
+        ``_BROWSER_ACTION_TIMEOUT_RESULT`` (HTTP 200) on timeout so the
+        runner surfaces a clean tool error rather than an HTTP exception.
+
+        Called by the runner's ``browser_*`` tool dispatch — not by the
+        LLM directly.
+
+        :param request: The inbound request, used for identity extraction.
+        :param session_id: Session/conversation identifier, e.g.
+            ``"conv_abc123"``.
+        :param body: ``{"action": <str>, "args": <dict>}`` where ``action``
+            is the ``browser_`` tool name minus the prefix.
+        :returns: The renderer's action-result JSON, or the timeout result.
+        :raises OmnigentError: 404 if no session exists.
+        """
+        user_id = _get_user_id(request, auth_provider)
+        await _require_access_and_level(
+            user_id, session_id, LEVEL_EDIT, permission_store, conversation_store
+        )
+        action = body.get("action")
+        args = body.get("args")
+        if not isinstance(action, str) or not action:
+            raise OmnigentError(
+                "browser action_request requires a non-empty 'action'",
+                code=ErrorCode.INVALID_INPUT,
+            )
+        if not isinstance(args, dict):
+            args = {}
+
+        action_id = f"baction_{secrets.token_hex(16)}"
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        _browser_action_registry[action_id] = future
+        _browser_action_owners[action_id] = session_id
+        try:
+            event = BrowserActionRequestEvent(
+                type="browser.action_request",
+                action_id=action_id,
+                action=action,
+                args=args,
+            )
+            session_stream.publish(session_id, event.model_dump())
+            done, _pending = await asyncio.wait(
+                {future},
+                timeout=_BROWSER_ACTION_AWAIT_S,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if future in done and not future.cancelled():
+                return future.result()
+            # Timed out (or cancelled) with no renderer result — likely no
+            # desktop app / no subscribed renderer. Clean, actionable JSON.
+            return _BROWSER_ACTION_TIMEOUT_RESULT
+        finally:
+            # Always drop the registry entries so a timed-out or resolved
+            # action can't leak a Future or a stale claim token.
+            if _browser_action_registry.get(action_id) is future:
+                _browser_action_registry.pop(action_id, None)
+            _browser_action_owners.pop(action_id, None)
+            _browser_action_claims.pop(action_id, None)
+
+    @router.post(
+        "/sessions/{session_id}/browser/action_claim/{action_id}",
+        # Internal embedded-browser flow — hidden from the public API reference.
+        include_in_schema=False,
+        response_model=None,
+    )
+    async def browser_action_claim(
+        request: Request,
+        session_id: str,
+        action_id: str,
+    ) -> dict[str, Any]:
+        """
+        Atomically claim a parked browser action (one winner per action).
+
+        The ``browser.action_request`` event fans out to every renderer
+        subscribed to the session stream; without a lease, each would
+        execute the action, double-driving the browser (design Risk-1).
+        This route grants exactly one claim: the first caller gets
+        ``{"claimed": true, "claim_token": <token>}``; every later caller
+        gets ``{"claimed": false}``.
+
+        The check-and-set is atomic **by construction**: there is no
+        ``await`` between reading ``_browser_action_claims`` and writing it,
+        and a coroutine with no intervening await point cannot be preempted
+        by another under asyncio — so two concurrent claims cannot both see
+        the action as unclaimed.
+
+        :param request: The inbound request, used for identity extraction.
+        :param session_id: Session/conversation identifier, e.g.
+            ``"conv_abc123"``.
+        :param action_id: The action to claim, e.g. ``"baction_abc123"``.
+        :returns: ``{"claimed": true, "claim_token": <str>}`` to the winner,
+            ``{"claimed": false}`` to losers or for an unknown/expired action.
+        :raises OmnigentError: 404 if no session exists.
+        """
+        user_id = _get_user_id(request, auth_provider)
+        await _require_access_and_level(
+            user_id, session_id, LEVEL_EDIT, permission_store, conversation_store
+        )
+        # Unknown / already-resolved action: nothing to claim.
+        if _browser_action_owners.get(action_id) != session_id:
+            return {"claimed": False}
+        # ── Atomic region: no ``await`` between this read and the write. ──
+        if action_id in _browser_action_claims:
+            return {"claimed": False}
+        claim_token = secrets.token_hex(16)
+        _browser_action_claims[action_id] = claim_token
+        # ── End atomic region. ──
+        return {"claimed": True, "claim_token": claim_token}
+
+    @router.post(
+        "/sessions/{session_id}/browser/action_result/{action_id}",
+        # Internal embedded-browser flow — hidden from the public API reference.
+        include_in_schema=False,
+        status_code=202,
+        response_model=None,
+    )
+    async def browser_action_result(
+        request: Request,
+        session_id: str,
+        action_id: str,
+        body: dict[str, Any],
+    ) -> dict[str, bool]:
+        """
+        Deliver a browser action result, resolving the parked Future.
+
+        Mirrors the elicitation-resolve ownership guard, plus a claim-token
+        check: the caller must present the ``claim_token`` this action was
+        leased under (via ``/browser/action_claim/{action_id}``). A
+        tokenless or mismatched result is rejected with 403 — a renderer
+        that lost the claim race cannot resolve the Future with stale work.
+
+        :param request: The inbound request, used for identity extraction.
+        :param session_id: Session/conversation identifier, e.g.
+            ``"conv_abc123"``.
+        :param action_id: The action being resolved, e.g. ``"baction_abc"``.
+        :param body: ``{"result": <dict>, "claim_token": <str>}``.
+        :returns: ``{"resolved": true}`` when the Future was set,
+            ``{"resolved": false}`` when it was already done/gone.
+        :raises OmnigentError: 404 if no session exists; 403 on a missing or
+            mismatched claim token or an owner mismatch.
+        """
+        user_id = _get_user_id(request, auth_provider)
+        await _require_access_and_level(
+            user_id, session_id, LEVEL_EDIT, permission_store, conversation_store
+        )
+        claim_token = body.get("claim_token")
+        expected = _browser_action_claims.get(action_id)
+        if not isinstance(claim_token, str) or expected is None or claim_token != expected:
+            raise OmnigentError(
+                "browser action result requires a matching claim_token",
+                code=ErrorCode.FORBIDDEN,
+            )
+        # Only the session that issued the action may resolve it.
+        if _browser_action_owners.get(action_id) != session_id:
+            raise OmnigentError(
+                "browser action is not owned by this session",
+                code=ErrorCode.FORBIDDEN,
+            )
+        future = _browser_action_registry.get(action_id)
+        if future is None or future.done():
+            return {"resolved": False}
+        result = body.get("result")
+        future.set_result(result if isinstance(result, dict) else {"result": result})
+        return {"resolved": True}
 
     # ── POST /sessions/{session_id}/events ───────────────────────
 
