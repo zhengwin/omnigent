@@ -15,16 +15,18 @@
  *   1. Always keep the agent relay (`useBrowserAgentRelay`) alive for the
  *      conversation — the FIRST `browser_navigate` action is what creates the
  *      view, so the relay must be listening before any view exists.
- *   2. Once a view IS attached for this conversation, render a measuring
- *      placeholder that occupies layout space and keeps the native view
- *      positioned over it. Before that, render nothing (zero layout footprint)
- *      so an idle conversation's chat isn't split in half by an empty pane.
+ *   2. In the Electron shell the pane is ALWAYS visible and occupies its half of
+ *      the row. Before a view is attached (`viewActive` false) it shows a
+ *      centered empty state; once a view IS attached it renders the measuring
+ *      placeholder the native WebContentsView paints over. The bounds-sync
+ *      machinery (containerRef + syncBounds + rAF/ResizeObserver effects) is
+ *      gated on `viewActive`, so nothing measures an empty-state div.
  *
  *  DETACH-not-destroy on unmount: the view keeps running (a background agent's
  *  page survives a pane switch); it is destroyed only on explicit close.
  *
- *  Gated on `isElectronShell()` — in a plain browser this renders nothing and
- *  the relay is a no-op (there is no native view to position). */
+ *  Gated on `isElectronShell()` — in a plain browser this renders nothing (no
+ *  empty split pane in the web build) and the relay is a no-op. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isElectronShell } from "@/lib/nativeBridge";
 import { useBrowserAgentRelay } from "@/hooks/useBrowserAgentRelay";
@@ -252,17 +254,37 @@ export function BrowserPane({ conversationId, className }: BrowserPaneProps) {
     };
   }, [electron, viewActive, syncBounds]);
 
-  // Plain browser, or no view yet: render nothing (zero layout footprint). The
-  // relay above is still live so the first navigate can create the view.
-  if (!electron || !viewActive) return null;
+  // Plain browser (non-Electron): render nothing so the web build has no empty
+  // split pane. The relay is a no-op there anyway.
+  if (!electron) return null;
 
-  // The placeholder only MEASURES — the native WebContentsView paints over it.
+  // In the Electron shell the pane ALWAYS occupies its half of the row. Two
+  // inner states:
+  //   - viewActive: the measuring placeholder — the native WebContentsView
+  //     paints over it. `containerRef` + syncBounds + the rAF/observer effects
+  //     (all gated on viewActive above) keep it positioned.
+  //   - !viewActive: a centered empty state. NO containerRef here, so no bounds
+  //     are measured off an empty div; the effects stay dormant until the first
+  //     browser-view-created / host-active signal flips viewActive true.
   return (
     <div
-      ref={containerRef}
       className={className}
       data-browser-pane-conversation={conversationId}
       style={{ position: "relative", flex: 1, minWidth: 0, minHeight: 0 }}
-    />
+    >
+      {viewActive ? (
+        // The placeholder only MEASURES — the native WebContentsView paints
+        // over it. Fills the wrapper so its rect equals the pane's rect.
+        <div
+          ref={containerRef}
+          style={{ position: "absolute", inset: 0, minWidth: 0, minHeight: 0 }}
+        />
+      ) : (
+        <div className="flex h-full flex-1 items-center justify-center bg-card px-6 py-8 text-center text-muted-foreground text-sm">
+          No page open — the agent will open pages here, or navigate to get
+          started.
+        </div>
+      )}
+    </div>
   );
 }
