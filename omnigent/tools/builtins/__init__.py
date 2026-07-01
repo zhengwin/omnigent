@@ -168,41 +168,6 @@ def _create_export_agent(config: dict[str, str]) -> Tool:
     return ExportAgentTool()
 
 
-def _make_browser_factory(tool_name: str) -> _BuiltinFactory:
-    """
-    Build a lazy factory for one schema-only ``browser_*`` tool class.
-
-    Execution of the tool lives in the runner dispatch layer
-    (``omnigent/runner/tool_dispatch.py``); the class returned here is
-    schema surface only (``name`` / ``description`` / ``get_schema``).
-
-    :param tool_name: One of the five ``browser_*`` names.
-    :returns: A factory that constructs the matching Tool subclass.
-    """
-
-    def factory(config: dict[str, str]) -> Tool:
-        # Import lazily to avoid a module-load cost until a spec actually
-        # constructs a browser tool.
-        from omnigent.tools.builtins.browser import (
-            BrowserClickTool,
-            BrowserNavigateTool,
-            BrowserScreenshotTool,
-            BrowserSnapshotTool,
-            BrowserTypeTool,
-        )
-
-        by_name: dict[str, type[Tool]] = {
-            BrowserNavigateTool.name(): BrowserNavigateTool,
-            BrowserSnapshotTool.name(): BrowserSnapshotTool,
-            BrowserClickTool.name(): BrowserClickTool,
-            BrowserTypeTool.name(): BrowserTypeTool,
-            BrowserScreenshotTool.name(): BrowserScreenshotTool,
-        }
-        return by_name[tool_name]()
-
-    return factory
-
-
 # Unified registry for every reserved builtin name. The value
 # is either a factory callable (for user-enablable tools) or
 # ``None`` for framework-owned names that occupy the name-space
@@ -245,19 +210,21 @@ _BUILTIN_REGISTRY: dict[str, _BuiltinFactory | None] = {
     # name in the runner's tool dispatch — reserved here so user specs
     # cannot shadow it.
     "sys_advise_models": None,
+    # ``browser_*`` embedded-browser tools are framework-owned: always
+    # auto-registered by ``ToolManager._register_browser_tools`` (the
+    # single source of truth for registration), so any agent can drive
+    # the desktop app's browser without the spec opting in. Reserved
+    # here with ``None`` — exactly like ``list_comments`` /
+    # ``update_comment`` — so user specs cannot shadow the names and
+    # ``get_builtin_tool`` returns ``None`` for them (they are not
+    # instantiated via this registry). Execution is runner-dispatched
+    # (``_BROWSER_TOOLS`` in omnigent/runner/tool_dispatch.py).
+    "browser_navigate": None,
+    "browser_snapshot": None,
+    "browser_click": None,
+    "browser_type": None,
+    "browser_screenshot": None,
 }
-
-# Embedded-browser tools. Always registered. Each name maps to a factory
-# that constructs its schema-only ``browser_*`` Tool subclass; execution
-# lives in the runner dispatch ``_BROWSER_TOOLS`` branch.
-for _browser_name in (
-    "browser_navigate",
-    "browser_snapshot",
-    "browser_click",
-    "browser_type",
-    "browser_screenshot",
-):
-    _BUILTIN_REGISTRY[_browser_name] = _make_browser_factory(_browser_name)
 
 # Canonical set of every reserved builtin name. Derived from
 # the registry so there is a single source of truth — no drift
