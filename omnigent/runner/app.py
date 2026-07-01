@@ -13612,9 +13612,13 @@ def create_runner_app(
                 build_instructions,
             )
 
+            # per_request_instructions is forwarded by the Omnigent server
+            # (e.g. the functional-projects <project_instructions> block);
+            # absent ⇒ None ⇒ build_instructions is byte-identical to the
+            # spec-only prompt (zero-diff default).
             instructions = build_instructions(
                 cached_spec,
-                None,
+                msg_body.get("per_request_instructions"),
                 [],
             )
 

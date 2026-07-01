@@ -155,6 +155,57 @@ class SessionConnectivity:
     needs_workspace: bool
 
 
+@dataclass(frozen=True)
+class ProjectRecord:
+    """
+    Per-project metadata from the ``projects`` table.
+
+    Returned by :meth:`ConversationStore.get_project` and
+    :meth:`ConversationStore.upsert_project`. Membership is NOT part of
+    this record — a session belongs to a project via its
+    ``omni_project`` label, independent of whether a ``projects`` row
+    exists. ``get_project`` returns ``None`` for an implicit (label-only)
+    project that has no metadata row yet.
+
+    :param name: The project name / primary key, e.g. ``"my-project"``.
+    :param description: Standing instructions injected into member
+        sessions' system prompt, or ``None`` when unset.
+    :param icon: Optional icon id for the projects UI, or ``None``.
+    :param created_at: Unix epoch seconds at row creation.
+    :param updated_at: Unix epoch seconds of the last write.
+    """
+
+    name: str
+    description: str | None
+    icon: str | None
+    created_at: int
+    updated_at: int
+
+
+@dataclass(frozen=True)
+class ProjectDetail:
+    """
+    A project as surfaced to the projects view: metadata + session count.
+
+    Returned by :meth:`ConversationStore.list_projects_detailed`, one per
+    project in the union of (implicit label-only projects) and
+    (``projects`` table rows). ``description``/``icon`` are ``None`` for
+    an implicit project with no metadata row; ``session_count`` is ``0``
+    for a metadata row with no live member sessions.
+
+    :param name: The project name, e.g. ``"my-project"``.
+    :param description: Standing-instructions text, or ``None``.
+    :param icon: Optional icon id, or ``None``.
+    :param session_count: Number of non-archived member sessions,
+        after the ``accessible_by`` ACL filter.
+    """
+
+    name: str
+    description: str | None
+    icon: str | None
+    session_count: int
+
+
 class ConversationNotFoundError(Exception):
     """
     Raised when a required conversation row is missing.
@@ -748,6 +799,75 @@ class ConversationStore(ABC):
             ``list_conversations`` ACL filter). ``None`` returns
             projects across all sessions.
         :returns: List of project names ordered alphabetically.
+        """
+        ...
+
+    @abstractmethod
+    def list_projects_detailed(
+        self,
+        accessible_by: str | None = None,
+    ) -> list[ProjectDetail]:
+        """
+        Return every project with metadata + member-session count.
+
+        The result is the UNION of two sources so neither drops out of
+        the projects view:
+
+        - **Implicit projects** — names carried by at least one
+          *non-archived* ``conversation_labels`` row ``key="omni_project"``
+          (the same set :meth:`list_projects` returns). ``description``
+          and ``icon`` are ``None`` unless a ``projects`` row exists.
+        - **Explicit rows** — every ``projects`` table row, even one with
+          zero member sessions (``session_count == 0``), so a project
+          created via the page appears before it has any sessions.
+
+        :param accessible_by: When set, restrict the session-count (and
+            the implicit-project set) to sessions the user has a
+            permission row for, mirroring :meth:`list_projects`.
+            Explicit ``projects`` rows are always listed regardless of
+            ACL — they carry no session-level content, only metadata.
+        :returns: List of :class:`ProjectDetail`, ordered by name.
+        """
+        ...
+
+    @abstractmethod
+    def get_project(self, name: str) -> ProjectRecord | None:
+        """
+        Return the ``projects`` metadata row for *name*, or ``None``.
+
+        ``None`` means no metadata row exists yet — the project may still
+        exist implicitly (label-only). Callers that only need the
+        description (e.g. prompt injection) treat ``None`` as "no
+        description", which is the zero-diff default.
+
+        :param name: The project name / primary key, e.g. ``"my-project"``.
+        :returns: The :class:`ProjectRecord`, or ``None`` when absent.
+        """
+        ...
+
+    @abstractmethod
+    def upsert_project(
+        self,
+        name: str,
+        description: str | None = None,
+        icon: str | None = None,
+    ) -> ProjectRecord:
+        """
+        Create or update the ``projects`` metadata row for *name*.
+
+        Insert when no row exists (stamping ``created_at``); otherwise
+        update in place. Only the fields explicitly passed are written —
+        an omitted (``None``) argument leaves the existing column value
+        untouched on update, so callers can patch just the description or
+        just the icon. To *clear* a field, callers pass an empty string.
+        ``updated_at`` is refreshed on every call.
+
+        :param name: The project name / primary key.
+        :param description: New description, or ``None`` to leave
+            unchanged. Empty string clears it.
+        :param icon: New icon id, or ``None`` to leave unchanged. Empty
+            string clears it.
+        :returns: The resulting :class:`ProjectRecord`.
         """
         ...
 
