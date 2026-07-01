@@ -175,6 +175,16 @@ def _create_export_agent(config: dict[str, str]) -> Tool:
 # the default — keeps the builtin registry, ``BUILTIN_NAMES``, and
 # ``INSTANTIABLE_BUILTINS`` byte-for-byte identical to before this
 # feature landed (design Task 7: zero-diff default).
+#
+# OPERATIONAL CAVEAT: this flag is read ONCE, at module import time (the
+# registration block below runs at import). Toggling
+# ``OMNIGENT_BROWSER_TOOLS`` in a live process does NOT change the
+# already-built ``_BUILTIN_REGISTRY`` — the AP/runner must be
+# (re)started with the flag set for the browser tools to appear. This
+# matches the static-registry style of every other builtin (the
+# registry is a module constant, not a per-request lookup); it is called
+# out here and in ``web/electron/README.md`` so operators don't expect a
+# hot toggle.
 _BROWSER_TOOLS_FLAG = "OMNIGENT_BROWSER_TOOLS"
 _BROWSER_FALSEY = frozenset({"", "0", "false", "no", "off"})
 

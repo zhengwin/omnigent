@@ -363,6 +363,14 @@ _NATIVE_RELAY_BUILTIN_TOOLS = (
     | _AGENT_TOOLS
     | _POLICY_TOOLS
     | _TERMINAL_TOOLS
+    # ``browser_*`` must ride the native relay: the Omnigent desktop app
+    # runs native (claude/codex/pi) sessions, which ignore ``request.tools``
+    # and see ONLY this relay surface — without this union member the
+    # feature is dead for its real target. Zero-diff default is preserved
+    # because the relay filters ``ToolManager(spec).get_tool_schemas()``,
+    # which emits browser schemas only when ``OMNIGENT_BROWSER_TOOLS`` is
+    # truthy AND the spec declares the builtins (see builtins/__init__.py).
+    | _BROWSER_TOOLS
 )
 
 
