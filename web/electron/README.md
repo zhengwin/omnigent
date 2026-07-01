@@ -107,13 +107,15 @@ one `web` bundle works both in a browser and under Electron.
 
 ```
 electron/
-  package.json        # Electron + electron-builder deps and build config
-  src/main.js         # main process: window, settings, menu, IPC, badge, notify
-  src/preload.js      # contextBridge: window.omnigentDesktop + omnigentSetup
-  src/find_preload.js # contextBridge for the find bar: window.omnigentFind
-  setup/index.html    # the bundled "connect to server" setup page
-  find/index.html     # the bundled find-in-page bar (Cmd/Ctrl+F)
-  icons/              # app icons
+  package.json             # Electron + electron-builder deps and build config
+  src/main.js              # main process: window, settings, menu, IPC, badge, notify
+  src/preload.js           # contextBridge: window.omnigentDesktop + omnigentSetup
+  src/find_preload.js      # contextBridge for the find bar: window.omnigentFind
+  src/browserViewRegistry.js  # per-conversation WebContentsView registry (browser pane)
+  src/browserViewBounds.js    # CSS-px → window-DIP bounds conversion (browser pane)
+  setup/index.html         # the bundled "connect to server" setup page
+  find/index.html          # the bundled find-in-page bar (Cmd/Ctrl+F)
+  icons/                   # app icons
 ```
 
 Native niceties beyond notifications/badge: a right-click context menu
@@ -153,6 +155,54 @@ dismisses.
   - The microphone permission grant is likewise scoped: only the audio set,
     only for pages on an origin some window is pinned to, and only when the
     requesting page is the top-level page — everything else is denied.
+
+## Embedded browser pane (Phase 2)
+
+The desktop shell hosts an **agent-driven embedded browser**: the agent's
+`browser_*` MCP tools (navigate / snapshot / click / type / screenshot) drive a
+real Chromium page the user can watch live. A webview/iframe can't provide
+screenshots, arbitrary in-page JS, or cross-origin navigation, so each browser
+is a native Electron **`WebContentsView`** positioned over a placeholder `<div>`
+the SPA measures — not an in-page element.
+
+**Pieces:**
+
+- `src/browserViewRegistry.js` — a per-**conversation** `Map` of
+  `WebContentsView`s (cap 10). `setActive` attaches one view to the host window
+  and **detaches (does not destroy)** the previous one, so a background
+  conversation's page keeps running when the user switches away; views are
+  destroyed only on explicit close or window teardown. Each child view keeps
+  `nodeIntegration:false, contextIsolation:true, sandbox:true`.
+- `src/browserViewBounds.js` — converts the placeholder's renderer CSS pixels to
+  window device-independent pixels (they diverge after `Cmd+/Cmd-` zoom).
+- `src/main.js` — instantiates one registry **per shell window** and exposes
+  `ipcMain.handle('omnigent:browser-*')`: `open-or-navigate`, `set-active`,
+  `resize`, `screenshot` (`capturePage().toPNG()` → base64), `execute`, `close`.
+  Every handler is gated on `isPinnedOriginSender` (only the connected server's
+  own page may drive the views) and resolves the *sender window's own* registry,
+  so one window can never manipulate another's panes.
+- `src/preload.js` — adds `browserOpenOrNavigate/SetActive/Resize/Screenshot/`
+  `Execute/Close` (+ the `onBrowserHostActiveChanged` / `onBrowserViewClosed`
+  subscriptions) to `window.omnigentDesktop`, each a thin `ipcRenderer.invoke`.
+- Renderer side (in `web/src`): `hooks/useBrowserAgentRelay.ts` receives the
+  `browser.action_request` SSE event, **claims** the action on the server
+  (atomic check-and-set so two windows on one server can't double-execute),
+  runs it via the preload bridge, and POSTs the result back with its claim
+  token; `components/BrowserPane/BrowserPane.tsx` measures the placeholder and
+  keeps the native view positioned over it. Both self-gate on
+  `isElectronShell()`, so a plain browser tab is inert (the action times out on
+  the server with a clean "is the desktop app open?" error).
+
+**Risk-4 — JS trust boundary (important):** `omnigent:browser-execute` runs
+arbitrary JS in the child view via `executeJavaScript(js, true)`. It is exposed
+to the SPA **only for the relay's own fixed templates** (the DOM-snapshot walk,
+and the click / type element resolvers) — there is deliberately **no
+agent-facing generic `evaluate`**. This keeps the *agent* boundary: the agent
+picks elements by `ref`/`selector` and supplies text, but never ships a raw JS
+string that main will run. (It does not, and is not intended to, defend against
+XSS *within* the visited page — that page runs its own scripts in its own
+sandboxed view regardless.) Preserve this when extending the bridge: add typed,
+argument-shaped actions, not a passthrough JS channel.
 
 ## Prerequisites
 
