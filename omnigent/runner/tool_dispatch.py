@@ -2112,7 +2112,8 @@ async def _upload_config_bundle(
     try:
         bundle_bytes = await asyncio.to_thread(_bundle_local_agent_source, source)
     except Exception as exc:  # noqa: BLE001 — disk/tar errors become a typed tool error.
-        return json.dumps({"error": f"sys_session_create failed to bundle config: {exc}"})
+        tool_name = "sys_session_create_toplevel" if top_level else "sys_session_create"
+        return json.dumps({"error": f"{tool_name} failed to bundle config: {exc}"})
 
     if top_level:
         from omnigent.runner.identity import get_stable_runner_id
@@ -2187,7 +2188,15 @@ async def _session_create_from_config_path(
         return data
     child_session_id = data.get("session_id")
     if not isinstance(child_session_id, str) or not child_session_id:
-        return json.dumps({"error": "server did not return a child session id"})
+        return json.dumps(
+            {
+                "error": (
+                    "server did not return a session id"
+                    if top_level
+                    else "server did not return a child session id"
+                )
+            }
+        )
     created_agent_id = data.get("agent_id")
     if not isinstance(created_agent_id, str) or not created_agent_id:
         # CreatedSessionResponse.agent_id is a required field — a
