@@ -14,7 +14,8 @@
  *  Lives as the "Browser" tab inside the right Workspace rail (WorkspacePanel),
  *  so it only mounts while that tab is selected. The pane is a flex COLUMN whose
  *  first child is ALWAYS a toolbar (URL bar + back/forward/reload + DevTools
- *  toggle) — the URL bar must be reachable from a cold start so the user can
+ *  toggle + a design-mode toggle) — the URL bar must be reachable from a cold
+ *  start so the user can
  *  open the first page (typing a URL creates the view on demand). Below the
  *  toolbar the content switches on `viewActive`: once a view is attached it's
  *  the measuring placeholder the native WebContentsView paints over; before then
@@ -36,7 +37,13 @@
  *
  *  Gated on `isElectronShell()` — in a plain browser this renders nothing (the
  *  Browser tab isn't shown there anyway). */
-import { ChevronLeftIcon, ChevronRightIcon, RotateCwIcon, WrenchIcon } from "lucide-react";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  RotateCwIcon,
+  SquareDashedMousePointerIcon,
+  WrenchIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isElectronShell } from "@/lib/nativeBridge";
 import { normalizeTypedUrl } from "@/lib/normalizeTypedUrl";
@@ -81,6 +88,12 @@ interface BrowserPaneBridge {
   browserGoForward?: (conversationId: string) => Promise<NavResult>;
   browserReload?: (conversationId: string) => Promise<{ ok: boolean; error?: string }>;
   openBrowserDevTools?: (conversationId: string) => Promise<{ ok: boolean; error?: string }>;
+  browserEnableDesignMode?: (
+    conversationId: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  browserDisableDesignMode?: (
+    conversationId: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
   onBrowserHostActiveChanged?: (
     callback: (payload: { conversationId: string | null }) => void,
   ) => () => void;
@@ -141,6 +154,12 @@ export function BrowserPane({ conversationId, className }: BrowserPaneProps) {
   const urlEditingRef = useRef(false);
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
+  // Design mode (point-and-prompt): toggled by the toolbar button. When on,
+  // the main process injects the in-page element picker into the view; the
+  // actual submit routing (element prompt → chat send) lives in AppShell, where
+  // the relay is hoisted. This flag only drives the button's pressed state and
+  // the enable/disable IPC.
+  const [designMode, setDesignMode] = useState(false);
 
   // NOTE: the agent relay is NOT mounted here. BrowserPane only mounts when the
   // Browser tab is selected, but the relay must be listening BEFORE the first
@@ -261,6 +280,24 @@ export function BrowserPane({ conversationId, className }: BrowserPaneProps) {
     const bridge = getBridge();
     void bridge?.openBrowserDevTools?.(conversationId);
   }, [conversationId]);
+
+  const handleToggleDesignMode = useCallback(() => {
+    const bridge = getBridge();
+    if (!bridge) return;
+    if (designMode) {
+      void bridge.browserDisableDesignMode?.(conversationId);
+      setDesignMode(false);
+    } else {
+      void bridge.browserEnableDesignMode?.(conversationId);
+      setDesignMode(true);
+    }
+  }, [conversationId, designMode]);
+
+  // If the view goes away (closed) while design mode is on, drop the pressed
+  // state so the button doesn't lie — the injected picker died with the view.
+  useEffect(() => {
+    if (!viewActive && designMode) setDesignMode(false);
+  }, [viewActive, designMode]);
 
   // Measure the placeholder and push bounds to the main process. These are
   // renderer CSS pixels; the main process converts to WebContentsView DIPs
@@ -475,6 +512,24 @@ export function BrowserPane({ conversationId, className }: BrowserPaneProps) {
           className="flex size-6 items-center justify-center rounded text-foreground hover:bg-muted disabled:pointer-events-none disabled:opacity-40"
         >
           <WrenchIcon className="size-4" />
+        </button>
+        <button
+          type="button"
+          onClick={handleToggleDesignMode}
+          disabled={!viewActive}
+          aria-pressed={designMode}
+          aria-label={designMode ? "Exit design mode" : "Enter design mode"}
+          title={
+            designMode
+              ? "Click an element in the page, then describe what to change"
+              : "Design mode: point at an element to prompt about it"
+          }
+          className={cn(
+            "flex size-6 items-center justify-center rounded text-foreground hover:bg-muted disabled:pointer-events-none disabled:opacity-40",
+            designMode && "bg-primary/15 text-primary hover:bg-primary/20",
+          )}
+        >
+          <SquareDashedMousePointerIcon className="size-4" />
         </button>
       </div>
       {viewActive ? (

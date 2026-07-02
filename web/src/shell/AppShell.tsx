@@ -18,6 +18,11 @@ import {
   onNativeSidebarDrag,
 } from "@/lib/nativeBridge";
 import { onBrowserActionRequest } from "@/lib/browserActionBus";
+import {
+  buildDesignModePrompt,
+  dataUrlToFile,
+  type DesignModeElement,
+} from "@/lib/designModePrompt";
 import { readSessionWorkspaceState, writeSessionWorkspaceState } from "@/lib/sessionWorkspaceState";
 import {
   Dialog,
@@ -522,6 +527,103 @@ export function AppShell() {
       setRightPanelOpen(true);
     });
   }, []);
+
+  // Design mode (point-and-prompt) submit routing. Lives here — alongside the
+  // hoisted relay — because the in-page popup posts back via preload IPC that
+  // is delivered to the always-mounted shell, not to BrowserPane (which only
+  // mounts while the Browser tab is selected). On element-prompt-submit we
+  // build the `[Design Mode — …]` message, attach the cropped element
+  // screenshot as a File, send it through the NORMAL chat path
+  // (chatStore.send) — there is NO backend design-edit route — then signal the
+  // result back so the popup shows green/red. On dismiss, no-op.
+  //
+  // agentId: we use the conversation's own bound agent (boundAgent) — the
+  // element the user picked belongs to the page this conversation drives, so
+  // its own agent is the right recipient. That's cleaner than reaching into
+  // ChatPage's selectedAgentId (which is local UI state for the composer's
+  // agent picker and not available at the shell level).
+  //
+  // The submit event carries only element + prompt; the screenshot arrives on
+  // the earlier element-selected event, so we stash the most-recent one keyed
+  // by conversationId and pair it up at submit time.
+  const designShotRef = useRef<Map<string, string>>(new Map());
+  const boundAgentId = boundAgent?.id ?? null;
+  useEffect(() => {
+    if (!isElectronShell()) return;
+    const w = window as unknown as {
+      omnigentDesktop?: {
+        onBrowserElementSelected?: (
+          cb: (p: { conversationId?: string; screenshot?: string | null }) => void,
+        ) => () => void;
+        onBrowserElementPromptSubmit?: (
+          cb: (p: {
+            conversationId?: string;
+            id?: number;
+            element?: DesignModeElement;
+            prompt?: string;
+          }) => void,
+        ) => () => void;
+        onBrowserElementPromptDismiss?: (cb: (p: { conversationId?: string }) => void) => () => void;
+        browserSignalDesignResult?: (
+          conversationId: string,
+          result: { id: number; ok: boolean; message?: string },
+        ) => Promise<{ ok: boolean; error?: string }>;
+      };
+    };
+    const desktop = w.omnigentDesktop;
+    if (!desktop) return;
+
+    const unsubSelected = desktop.onBrowserElementSelected?.((payload) => {
+      const cid = payload.conversationId;
+      if (!cid) return;
+      if (typeof payload.screenshot === "string") {
+        designShotRef.current.set(cid, payload.screenshot);
+      } else {
+        designShotRef.current.delete(cid);
+      }
+    });
+
+    const unsubSubmit = desktop.onBrowserElementPromptSubmit?.((payload) => {
+      const cid = payload.conversationId;
+      const submitId = typeof payload.id === "number" ? payload.id : 0;
+      const signal = (ok: boolean, message: string) => {
+        if (cid) void desktop.browserSignalDesignResult?.(cid, { id: submitId, ok, message });
+      };
+      if (!cid || !payload.element || !payload.prompt) {
+        signal(false, "Missing element or prompt.");
+        return;
+      }
+      if (!boundAgentId) {
+        signal(false, "No agent bound to this session yet.");
+        return;
+      }
+      try {
+        const text = buildDesignModePrompt(payload.element, payload.prompt);
+        const shot = designShotRef.current.get(cid);
+        const file = dataUrlToFile(shot, `design-element-${submitId}.png`);
+        void useChatStore
+          .getState()
+          .send(text, boundAgentId, file ? [file] : undefined)
+          .then(() => signal(true, "Sent to agent."))
+          .catch((err: unknown) => signal(false, `Send failed: ${String(err)}`));
+        // Clear the stashed screenshot so a later submit without a fresh pick
+        // doesn't reuse a stale crop.
+        designShotRef.current.delete(cid);
+      } catch (err) {
+        signal(false, `Error: ${String(err)}`);
+      }
+    });
+
+    // Dismiss is a no-op on the React side — the in-page popup tears its own
+    // UI down; we just don't want an unhandled subscription.
+    const unsubDismiss = desktop.onBrowserElementPromptDismiss?.(() => {});
+
+    return () => {
+      unsubSelected?.();
+      unsubSubmit?.();
+      unsubDismiss?.();
+    };
+  }, [boundAgentId]);
 
   // Build a stable Set of agent-changed file paths so the FileViewer context
   // can tell BlockRenderer which inline code spans are real workspace files.

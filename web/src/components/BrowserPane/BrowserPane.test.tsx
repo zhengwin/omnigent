@@ -31,6 +31,8 @@ function installBridge(overrides: Record<string, unknown> = {}) {
     browserGoForward: vi.fn().mockResolvedValue({ ok: true }),
     browserReload: vi.fn().mockResolvedValue({ ok: true }),
     openBrowserDevTools: vi.fn().mockResolvedValue({ ok: true }),
+    browserEnableDesignMode: vi.fn().mockResolvedValue({ ok: true }),
+    browserDisableDesignMode: vi.fn().mockResolvedValue({ ok: true }),
     ...overrides,
   };
   (window as unknown as { omnigentDesktop?: unknown }).omnigentDesktop = bridge;
@@ -111,5 +113,58 @@ describe("BrowserPane cold-start (no view yet)", () => {
       expect(screen.queryByText(/enter a url above to get started/i)).toBeNull();
     });
     expect(screen.getByRole("textbox", { name: /address bar/i })).toBeInTheDocument();
+  });
+});
+
+describe("BrowserPane design-mode toggle", () => {
+  it("renders the design-mode toggle in the toolbar", async () => {
+    render(<BrowserPane conversationId="conv_dm1" />);
+    await screen.findByRole("textbox", { name: /address bar/i });
+    expect(screen.getByRole("button", { name: /enter design mode/i })).toBeInTheDocument();
+  });
+
+  it("disables the design-mode toggle while no view is attached", async () => {
+    render(<BrowserPane conversationId="conv_dm2" />);
+    await screen.findByRole("textbox", { name: /address bar/i });
+    // No injected picker target without a view — the button is disabled, same
+    // as reload / devtools.
+    expect(screen.getByRole("button", { name: /enter design mode/i })).toBeDisabled();
+  });
+
+  it("calls enable then disable IPC as it toggles, once a view is active", async () => {
+    let fireCreated: ((p: { conversationId: string }) => void) | undefined;
+    const bridge = installBridge({
+      onBrowserViewCreated: vi.fn((cb: (p: { conversationId: string }) => void) => {
+        fireCreated = cb;
+        return () => {};
+      }),
+    });
+
+    render(<BrowserPane conversationId="conv_dm3" />);
+    await screen.findByRole("textbox", { name: /address bar/i });
+
+    // Activate a view so the toggle is enabled.
+    fireCreated?.({ conversationId: "conv_dm3" });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /enter design mode/i })).not.toBeDisabled();
+    });
+
+    // First click enables design mode (button flips to aria-pressed + "exit").
+    screen.getByRole("button", { name: /enter design mode/i }).click();
+    await waitFor(() => {
+      expect(bridge.browserEnableDesignMode).toHaveBeenCalledWith("conv_dm3");
+    });
+    const pressed = screen.getByRole("button", { name: /exit design mode/i });
+    expect(pressed).toHaveAttribute("aria-pressed", "true");
+
+    // Second click disables it again.
+    pressed.click();
+    await waitFor(() => {
+      expect(bridge.browserDisableDesignMode).toHaveBeenCalledWith("conv_dm3");
+    });
+    expect(screen.getByRole("button", { name: /enter design mode/i })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
   });
 });
