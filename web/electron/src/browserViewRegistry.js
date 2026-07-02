@@ -65,6 +65,11 @@ function createBrowserViewRegistry({
       // page advance it past the initial URL — panel re-mounts would then see a
       // mismatch and force a refresh.
       lastRequestedUrl: '',
+      // Design-mode console-message listener + its webContents, set by
+      // browserIpc's enable-design-mode handler and cleared on disable/close.
+      // Null until design mode is turned on for this entry.
+      designModeListener: null,
+      designModeWebContents: null,
     };
     return entry;
   }
@@ -212,6 +217,20 @@ function createBrowserViewRegistry({
         detachFromHost(entry.view);
       } catch {}
       activeConversationId = null;
+    }
+    // Detach the design-mode console-message listener, if any, before the
+    // webContents is closed — main.js's browserIpc stores it on the entry
+    // (`designModeListener` / `designModeWebContents`) when design mode is
+    // enabled, and relies on this teardown so a closed view leaves no dangling
+    // listener. No-op when design mode was never turned on for this entry.
+    if (entry.designModeListener && entry.designModeWebContents) {
+      try {
+        entry.designModeWebContents.removeListener('console-message', entry.designModeListener);
+      } catch {
+        /* destroyed */
+      }
+      entry.designModeListener = null;
+      entry.designModeWebContents = null;
     }
     entry.boundsController.clear();
     try {

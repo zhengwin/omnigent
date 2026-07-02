@@ -42,6 +42,9 @@ function makeIpcMain() {
  *  devtools + recorded navigation calls. */
 function makeWebContents({ canBack = false, canForward = false } = {}) {
   const calls = [];
+  // Multiple listeners can register for the same event (e.g. did-navigate plus,
+  // later, a console-message design-mode handler), and design-mode teardown
+  // uses removeListener — so track a Set per event, not a single fn.
   const listeners = new Map();
   let devtoolsOpen = false;
   return {
@@ -55,6 +58,12 @@ function makeWebContents({ canBack = false, canForward = false } = {}) {
     },
     reload: () => calls.push("reload"),
     isDevToolsOpened: () => devtoolsOpen,
+    isDestroyed: () => false,
+    getZoomFactor: () => 1,
+    executeJavaScript: (js) => {
+      calls.push(`executeJavaScript:${String(js).slice(0, 40)}`);
+      return Promise.resolve(undefined);
+    },
     openDevTools: (opts) => {
       devtoolsOpen = true;
       calls.push(`openDevTools:${opts?.mode}`);
@@ -63,8 +72,17 @@ function makeWebContents({ canBack = false, canForward = false } = {}) {
       devtoolsOpen = false;
       calls.push("closeDevTools");
     },
-    on: (evt, fn) => listeners.set(evt, fn),
-    emit: (evt, ...eventArgs) => listeners.get(evt)?.({}, ...eventArgs),
+    on: (evt, fn) => {
+      if (!listeners.has(evt)) listeners.set(evt, new Set());
+      listeners.get(evt).add(fn);
+    },
+    removeListener: (evt, fn) => {
+      listeners.get(evt)?.delete(fn);
+    },
+    listenerCount: (evt) => listeners.get(evt)?.size ?? 0,
+    emit: (evt, ...eventArgs) => {
+      for (const fn of listeners.get(evt) ?? []) fn({}, ...eventArgs);
+    },
   };
 }
 
@@ -118,6 +136,9 @@ describe("browserIpc — trust gate", () => {
       "omnigent:browser-go-forward",
       "omnigent:browser-reload",
       "omnigent:open-browser-devtools",
+      "omnigent:browser-enable-design-mode",
+      "omnigent:browser-disable-design-mode",
+      "omnigent:browser-signal-design-result",
     ]) {
       assert.ok(channels.includes(ch), `missing handler: ${ch}`);
     }
@@ -223,6 +244,96 @@ describe("browserIpc — url live-tracking", () => {
     assert.equal(sent.filter((s) => s.channel === "browser-url-changed").length, 0);
     wc.emit("did-navigate-in-page", "https://example.com/#main", true); // main frame → emits
     assert.equal(sent.filter((s) => s.channel === "browser-url-changed").length, 1);
+  });
+});
+
+describe("browserIpc — design mode", () => {
+  it("rejects an unpinned sender on all three design-mode channels", async () => {
+    const { ipcMain, event } = setup({ pinned: false });
+    const channels = [
+      "omnigent:browser-enable-design-mode",
+      "omnigent:browser-disable-design-mode",
+      "omnigent:browser-signal-design-result",
+    ];
+    const results = await Promise.all(
+      channels.map((ch) => ipcMain.invoke(ch, event, { conversationId: "conv_1" })),
+    );
+    results.forEach((r, i) => {
+      assert.equal(r.ok, false, `${channels[i]} should be gated`);
+      assert.match(r.error, /connected server's page/);
+    });
+  });
+
+  it("enable injects the picker script and attaches a console-message listener", async () => {
+    const wc = makeWebContents();
+    const { ipcMain, event } = setup({ webContents: wc });
+    const r = await ipcMain.invoke("omnigent:browser-enable-design-mode", event, {
+      conversationId: "conv_1",
+    });
+    assert.equal(r.ok, true);
+    assert.ok(wc.calls.some((c) => c.startsWith("executeJavaScript:")));
+    assert.equal(wc.listenerCount("console-message"), 1);
+  });
+
+  it("a select marker is forwarded to the sender as browser-element-selected", async () => {
+    const wc = makeWebContents();
+    const { ipcMain, sent, event } = setup({ webContents: wc });
+    await ipcMain.invoke("omnigent:browser-enable-design-mode", event, {
+      conversationId: "conv_1",
+    });
+    // A submit marker is the synchronous path (no screenshot capture), so it's
+    // deterministic without awaiting an async capture.
+    wc.emit(
+      "console-message",
+      "log",
+      "__omni_element_prompt_submit__" + JSON.stringify({ id: 3, prompt: "make it blue" }),
+    );
+    const submit = sent.find((s) => s.channel === "browser-element-prompt-submit");
+    assert.ok(submit, "expected a browser-element-prompt-submit event");
+    assert.equal(submit.payload.conversationId, "conv_1");
+    assert.equal(submit.payload.id, 3);
+    assert.equal(submit.payload.prompt, "make it blue");
+  });
+
+  it("enable is idempotent — toggling on twice leaves a single listener", async () => {
+    const wc = makeWebContents();
+    const { ipcMain, event } = setup({ webContents: wc });
+    await ipcMain.invoke("omnigent:browser-enable-design-mode", event, {
+      conversationId: "conv_1",
+    });
+    await ipcMain.invoke("omnigent:browser-enable-design-mode", event, {
+      conversationId: "conv_1",
+    });
+    assert.equal(wc.listenerCount("console-message"), 1);
+  });
+
+  it("disable detaches the console-message listener", async () => {
+    const wc = makeWebContents();
+    const { ipcMain, event } = setup({ webContents: wc });
+    await ipcMain.invoke("omnigent:browser-enable-design-mode", event, {
+      conversationId: "conv_1",
+    });
+    assert.equal(wc.listenerCount("console-message"), 1);
+    const r = await ipcMain.invoke("omnigent:browser-disable-design-mode", event, {
+      conversationId: "conv_1",
+    });
+    assert.equal(r.ok, true);
+    assert.equal(wc.listenerCount("console-message"), 0);
+  });
+
+  it("signal-design-result forwards the coerced envelope into the page", async () => {
+    const wc = makeWebContents();
+    const { ipcMain, event } = setup({ webContents: wc });
+    const r = await ipcMain.invoke("omnigent:browser-signal-design-result", event, {
+      conversationId: "conv_1",
+      id: 7,
+      ok: true,
+      message: "Sent to agent.",
+    });
+    assert.equal(r.ok, true);
+    const call = wc.calls.find((c) => c.startsWith("executeJavaScript:"));
+    assert.ok(call, "expected an executeJavaScript call carrying the result");
+    assert.match(call, /__omniOnDesignResult/);
   });
 });
 

@@ -266,6 +266,79 @@ contextBridge.exposeInMainWorld("omnigentDesktop", {
     ipcRenderer.on("browser-nav-state", listener);
     return () => ipcRenderer.removeListener("browser-nav-state", listener);
   },
+
+  // ── Design mode (point-and-prompt) ─────────────────────────────────────
+  // Toggle the in-page element picker + anchored popup inside the view. When
+  // the user Sends, the popup posts back through onBrowserElementPromptSubmit;
+  // the SPA routes it as a normal chat message (no backend route) and then
+  // calls browserSignalDesignResult to paint green/red feedback in the popup.
+  // Electron-only (needs executeJavaScript + the native view).
+
+  /**
+   * Inject the design-mode picker into the conversation's view.
+   * @param {string} conversationId
+   * @returns {Promise<{ ok: boolean, error?: string }>}
+   */
+  browserEnableDesignMode: (conversationId) =>
+    ipcRenderer.invoke("omnigent:browser-enable-design-mode", { conversationId }),
+  /**
+   * Tear the design-mode picker back down.
+   * @param {string} conversationId
+   * @returns {Promise<{ ok: boolean, error?: string }>}
+   */
+  browserDisableDesignMode: (conversationId) =>
+    ipcRenderer.invoke("omnigent:browser-disable-design-mode", { conversationId }),
+  /**
+   * Signal a submit's success/failure back into the in-page popup so it shows
+   * green/red feedback. `id` must match the submitId the popup emitted.
+   * @param {string} conversationId
+   * @param {{ id: number, ok: boolean, message?: string }} result
+   * @returns {Promise<{ ok: boolean, error?: string }>}
+   */
+  browserSignalDesignResult: (conversationId, result) =>
+    ipcRenderer.invoke("omnigent:browser-signal-design-result", {
+      conversationId,
+      id: result?.id,
+      ok: result?.ok,
+      message: result?.message,
+    }),
+  /**
+   * Subscribe to element-selection events (user clicked an element while
+   * design mode is on). Payload carries the element info + a cropped base64
+   * screenshot (`{conversationId, ...info, screenshot}`). Returns an
+   * unsubscribe.
+   * @param {(payload: Record<string, unknown>) => void} callback
+   * @returns {() => void}
+   */
+  onBrowserElementSelected: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("browser-element-selected", listener);
+    return () => ipcRenderer.removeListener("browser-element-selected", listener);
+  },
+  /**
+   * Subscribe to element-prompt submits (user pressed Send/Enter in the
+   * popup). Payload: `{conversationId, id, element, prompt}`. The SPA sends the
+   * prompt through the normal chat path and signals the result back. Returns an
+   * unsubscribe.
+   * @param {(payload: Record<string, unknown>) => void} callback
+   * @returns {() => void}
+   */
+  onBrowserElementPromptSubmit: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("browser-element-prompt-submit", listener);
+    return () => ipcRenderer.removeListener("browser-element-prompt-submit", listener);
+  },
+  /**
+   * Subscribe to element-prompt dismissals (user pressed × / Escape).
+   * Payload: `{conversationId}`. Returns an unsubscribe.
+   * @param {(payload: { conversationId: string }) => void} callback
+   * @returns {() => void}
+   */
+  onBrowserElementPromptDismiss: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("browser-element-prompt-dismiss", listener);
+    return () => ipcRenderer.removeListener("browser-element-prompt-dismiss", listener);
+  },
 });
 
 // Setup-page bridge: persist + navigate to a server URL, and read the saved

@@ -26,6 +26,7 @@ function makeRegistry() {
     webContents: {
       loadURL() {},
       close() {},
+      removeListener() {},
     },
   });
   const registry = createBrowserViewRegistry({
@@ -110,5 +111,26 @@ describe("browserViewRegistry — first-navigate activation signal", () => {
       devicePixelRatio: 1,
     });
     assert.equal(ctx.attached.length, 1, "view attached to host");
+  });
+
+  it("close() detaches any design-mode console listener stored on the entry", () => {
+    ctx.registry.openOrNavigate("conv_1", "https://example.com");
+    const entry = ctx.registry.get("conv_1");
+    // Simulate what browserIpc's enable-design-mode handler does: stash a
+    // listener + its webContents on the entry. close() must detach it so a
+    // destroyed view leaves no dangling console-message listener.
+    let removed = null;
+    const handler = () => {};
+    entry.designModeListener = handler;
+    entry.designModeWebContents = {
+      removeListener: (evt, fn) => {
+        removed = { evt, fn };
+      },
+    };
+    const r = ctx.registry.close("conv_1");
+    assert.equal(r.removed, true);
+    assert.deepEqual(removed, { evt: "console-message", fn: handler });
+    assert.equal(entry.designModeListener, null);
+    assert.equal(entry.designModeWebContents, null);
   });
 });
