@@ -113,6 +113,7 @@ electron/
   src/find_preload.js      # contextBridge for the find bar: window.omnigentFind
   src/browserViewRegistry.js  # per-conversation WebContentsView registry (browser pane)
   src/browserViewBounds.js    # CSS-px → window-DIP bounds conversion (browser pane)
+  src/browserIpc.js           # omnigent:browser-* IPC handlers (extracted from main.js)
   setup/index.html         # the bundled "connect to server" setup page
   find/index.html          # the bundled find-in-page bar (Cmd/Ctrl+F)
   icons/                   # app icons
@@ -175,16 +176,26 @@ the SPA measures — not an in-page element.
   `nodeIntegration:false, contextIsolation:true, sandbox:true`.
 - `src/browserViewBounds.js` — converts the placeholder's renderer CSS pixels to
   window device-independent pixels (they diverge after `Cmd+/Cmd-` zoom).
-- `src/main.js` — instantiates one registry **per shell window** and exposes
-  `ipcMain.handle('omnigent:browser-*')`: `open-or-navigate`, `set-active`,
-  `resize`, `screenshot` (`capturePage().toPNG()` → base64), `execute`, `close`.
-  Every handler is gated on `isPinnedOriginSender` (only the connected server's
-  own page may drive the views) and resolves the *sender window's own* registry,
-  so one window can never manipulate another's panes.
+- `src/main.js` — instantiates one registry **per shell window** and injects it
+  (plus the `isPinnedOriginSender` trust gate) into `registerBrowserIpc(...)`.
+- `src/browserIpc.js` — the whole `ipcMain.handle('omnigent:browser-*')` surface,
+  extracted out of `main.js` so that file stays bounded:
+  `open-or-navigate`, `set-active`, `resize`, `screenshot`
+  (`capturePage().toPNG()` → base64), `execute`, `has-view`, `close`, plus the
+  toolbar handlers `go-back`, `go-forward`, `reload`, and `open-devtools`
+  (toggle, docked bottom). Every handler is gated on `isPinnedOriginSender` (only
+  the connected server's own page may drive the views) and resolves the *sender
+  window's own* registry, so one window can never manipulate another's panes.
+  On view creation it also wires `did-navigate` / `did-navigate-in-page`
+  listeners that push `browser-url-changed` + `browser-nav-state` to the renderer
+  so the toolbar's URL bar live-tracks the real URL (redirects, in-page link
+  clicks, agent navigation) instead of going stale.
 - `src/preload.js` — adds `browserOpenOrNavigate/SetActive/Resize/Screenshot/`
-  `Execute/Close` + `browserHasView` (+ the `onBrowserViewCreated` /
-  `onBrowserHostActiveChanged` / `onBrowserViewClosed` subscriptions) to
-  `window.omnigentDesktop`, each a thin `ipcRenderer.invoke`.
+  `Execute/Close` + `browserHasView`, the toolbar methods
+  `browserGoBack/GoForward/Reload` + `openBrowserDevTools`, and the
+  subscriptions `onBrowserViewCreated` / `onBrowserHostActiveChanged` /
+  `onBrowserViewClosed` / `onBrowserUrlChanged` / `onBrowserNavState` to
+  `window.omnigentDesktop`, each a thin `ipcRenderer.invoke` / `ipcRenderer.on`.
 - Renderer side (in `web/src`): `hooks/useBrowserAgentRelay.ts` receives the
   `browser.action_request` SSE event, **claims** the action on the server
   (atomic check-and-set so two windows on one server can't double-execute),
@@ -203,6 +214,18 @@ calls `browserSetActive(conversationId)` — which attaches the view and starts
 bounds sync. Without this signal the pane would gate itself off forever and the
 embedded browser would stay invisible. (`browserViewRegistry.test.js` locks the
 create-signal → setActive → attached transition.)
+
+**Toolbar.** When a view is attached, `BrowserPane` renders a user-facing
+toolbar above the page: back / forward / reload, a DevTools toggle, and an
+editable URL bar (Enter navigates; the typed value is normalized to add a
+scheme — dotless corp shortnames like `go/foo` get `http://`, everything else
+`https://`). The bar reflects the *real* URL via `onBrowserUrlChanged`, but
+never overwrites what the user is actively typing. The pane is a flex **column**:
+the toolbar is a fixed-height row *above* the measured container, because the
+native `WebContentsView` paints over that container's rect — a toolbar inside it
+would be hidden by the overlay. The URL bar reuses the existing
+`browserOpenOrNavigate(..., {force:true})` path (the same one the relay uses), so
+no separate navigation IPC exists for manual entry.
 
 **Risk-4 — JS trust boundary (important):** `omnigent:browser-execute` runs
 arbitrary JS in the child view via `executeJavaScript(js, true)`. It is exposed
