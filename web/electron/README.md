@@ -183,7 +183,10 @@ the SPA measures — not an in-page element.
   `open-or-navigate`, `set-active`, `resize`, `screenshot`
   (`capturePage().toPNG()` → base64), `execute`, `has-view`, `close`, plus the
   toolbar handlers `go-back`, `go-forward`, `reload`, and `open-devtools`
-  (toggle, docked bottom). Every handler is gated on `isPinnedOriginSender` (only
+  (toggle, docked bottom), plus the design-mode handlers
+  `enable-design-mode` / `disable-design-mode` / `signal-design-result`
+  (inject / tear down the in-page element picker and paint result feedback).
+  Every handler is gated on `isPinnedOriginSender` (only
   the connected server's own page may drive the views) and resolves the *sender
   window's own* registry, so one window can never manipulate another's panes.
   On view creation it also wires `did-navigate` / `did-navigate-in-page`
@@ -192,10 +195,13 @@ the SPA measures — not an in-page element.
   clicks, agent navigation) instead of going stale.
 - `src/preload.js` — adds `browserOpenOrNavigate/SetActive/Resize/Screenshot/`
   `Execute/Close` + `browserHasView`, the toolbar methods
-  `browserGoBack/GoForward/Reload` + `openBrowserDevTools`, and the
+  `browserGoBack/GoForward/Reload` + `openBrowserDevTools`, the design-mode
+  methods `browserEnableDesignMode/DisableDesignMode/SignalDesignResult`, and the
   subscriptions `onBrowserViewCreated` / `onBrowserHostActiveChanged` /
-  `onBrowserViewClosed` / `onBrowserUrlChanged` / `onBrowserNavState` to
-  `window.omnigentDesktop`, each a thin `ipcRenderer.invoke` / `ipcRenderer.on`.
+  `onBrowserViewClosed` / `onBrowserUrlChanged` / `onBrowserNavState` +
+  `onBrowserElementSelected` / `onBrowserElementPromptSubmit` /
+  `onBrowserElementPromptDismiss` to `window.omnigentDesktop`, each a thin
+  `ipcRenderer.invoke` / `ipcRenderer.on`.
 - Renderer side (in `web/src`): `hooks/useBrowserAgentRelay.ts` receives the
   `browser.action_request` SSE event, **claims** the action on the server
   (atomic check-and-set so two windows on one server can't double-execute),
@@ -226,6 +232,27 @@ native `WebContentsView` paints over that container's rect — a toolbar inside 
 would be hidden by the overlay. The URL bar reuses the existing
 `browserOpenOrNavigate(..., {force:true})` path (the same one the relay uses), so
 no separate navigation IPC exists for manual entry.
+
+**Design mode (point-and-prompt).** A toolbar toggle (next to DevTools) injects
+an in-page element picker into the `WebContentsView` via `executeJavaScript`:
+hovering highlights the element under the cursor (overlay + `<Component>`/tag
+label); clicking opens a popup anchored to that element with an input + Send.
+On Send the popup emits a `console.log` marker (the injected script can't
+`require('electron')`), which the per-view console-message listener in
+`browserIpc.js` forwards to the SPA as `browser-element-prompt-submit`
+(carrying the element info; a cropped element screenshot arrives on the earlier
+`browser-element-selected` event). **Unlike SP2K there is no backend
+design-edit route** — `AppShell` (where the relay is hoisted, so it's listening
+even when the Browser tab isn't mounted) builds a `[Design Mode — …]` prompt,
+attaches the screenshot as a `File`, and sends it through the *normal* chat
+path (`chatStore.send`, targeting the conversation's own bound agent). It then
+calls `browserSignalDesignResult` so the popup paints green/red feedback. The
+picker markers are `__omni_element_select__` / `__omni_element_prompt_submit__`
+/ `__omni_element_dismiss__` (renamed from SP2K's `__sp2k_*`), and the per-view
+console listener is stored on the registry entry
+(`designModeListener` / `designModeWebContents`) so `browserViewRegistry`'s
+`close()` detaches it on teardown. Electron-only (needs `executeJavaScript` +
+the native view); no server flag.
 
 **Risk-4 — JS trust boundary (important):** `omnigent:browser-execute` runs
 arbitrary JS in the child view via `executeJavaScript(js, true)`. It is exposed
