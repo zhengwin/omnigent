@@ -12,15 +12,18 @@
  *  which an iframe can't provide, and Electron's `<webview>` is deprecated.
  *
  *  Lives as the "Browser" tab inside the right Workspace rail (WorkspacePanel),
- *  so it only mounts while that tab is selected. Before a view is attached
- *  (`viewActive` false) it shows a centered empty state; once a view IS attached
- *  it renders a toolbar (URL bar + back/forward/reload + DevTools toggle) above
- *  the measuring placeholder the native WebContentsView paints over. The pane is
- *  a flex COLUMN: the toolbar is a fixed-height row ABOVE the measured rect, so
- *  the native overlay (which paints over the container) never hides it. The
- *  bounds-sync machinery (containerRef + syncBounds + rAF/ResizeObserver effects)
- *  is gated on `viewActive`, so nothing measures an empty-state div, and it
- *  measures only the region BELOW the toolbar.
+ *  so it only mounts while that tab is selected. The pane is a flex COLUMN whose
+ *  first child is ALWAYS a toolbar (URL bar + back/forward/reload + DevTools
+ *  toggle) — the URL bar must be reachable from a cold start so the user can
+ *  open the first page (typing a URL creates the view on demand). Below the
+ *  toolbar the content switches on `viewActive`: once a view is attached it's
+ *  the measuring placeholder the native WebContentsView paints over; before then
+ *  it's a centered hint. The toolbar is a fixed-height row ABOVE the measured
+ *  rect, so the native overlay (which paints over the container) never hides it.
+ *  The bounds-sync machinery (containerRef + syncBounds + rAF/ResizeObserver
+ *  effects) is gated on `viewActive`, so nothing measures a hint div, and it
+ *  measures only the region BELOW the toolbar. Reload + DevTools are disabled
+ *  while !viewActive (nothing to reload / no devtools target yet).
  *
  *  The agent relay is NOT here — because this component only mounts while its
  *  tab is selected, but the relay must be listening before the first
@@ -379,7 +382,13 @@ export function BrowserPane({ conversationId, className }: BrowserPaneProps) {
   if (!electron) return null;
 
   // In the Electron shell the pane ALWAYS occupies its half of the row, as a
-  // FLEX COLUMN: an optional toolbar row (shrink-0) above the content area.
+  // FLEX COLUMN: the toolbar row (shrink-0) is ALWAYS the first child, above the
+  // content area — so the manual URL bar is reachable from a cold start (no
+  // page open yet). Typing a URL and pressing Enter runs browserOpenOrNavigate,
+  // which creates the view on demand → browser-view-created → viewActive flips
+  // true → the measuring container mounts. Gating the toolbar on viewActive
+  // (the old behavior) was a chicken-and-egg deadlock: no page → no toolbar →
+  // no way to open the first page.
   //
   // LAYOUT TRAP (verified): the native WebContentsView paints OVER the measured
   // `containerRef` rect. So the toolbar must live ABOVE that rect, never inside
@@ -388,93 +397,95 @@ export function BrowserPane({ conversationId, className }: BrowserPaneProps) {
   // getBoundingClientRect() returns only the region below the toolbar and the
   // native view fills exactly that.
   //
-  // Two inner states:
-  //   - viewActive: toolbar + measuring placeholder. `containerRef` + syncBounds
-  //     + the rAF/observer effects (all gated on viewActive above) keep the
-  //     native view positioned over the container.
-  //   - !viewActive: a centered empty state, NO toolbar (a dead toolbar with
-  //     nothing to drive would be noise) and NO containerRef (nothing measures
-  //     an empty div). The effects stay dormant until the first
-  //     browser-view-created / host-active signal flips viewActive true.
+  // Content area below the always-present toolbar switches on viewActive:
+  //   - viewActive: the measuring `containerRef` placeholder. `containerRef` +
+  //     syncBounds + the rAF/observer effects (all gated on viewActive above)
+  //     keep the native view positioned over the container. NO containerRef is
+  //     mounted while !viewActive, so nothing measures an empty div.
+  //   - !viewActive: a centered hint. Back/forward are already disabled off
+  //     canGoBack/canGoForward (both false with no view); reload + DevTools are
+  //     explicitly disabled (nothing to reload / no devtools target yet). The
+  //     URL bar stays editable so the user can open the first page.
   return (
     <div
       className={cn("flex min-h-0 min-w-0 flex-col", className)}
       data-browser-pane-conversation={conversationId}
     >
+      <div className="flex shrink-0 items-center gap-1 border-border border-b bg-card px-2 py-1.5">
+        <button
+          type="button"
+          onClick={handleBack}
+          disabled={!canGoBack}
+          aria-label="Go back"
+          title="Back"
+          className="flex size-6 items-center justify-center rounded text-foreground hover:bg-muted disabled:pointer-events-none disabled:opacity-40"
+        >
+          <ChevronLeftIcon className="size-4" />
+        </button>
+        <button
+          type="button"
+          onClick={handleForward}
+          disabled={!canGoForward}
+          aria-label="Go forward"
+          title="Forward"
+          className="flex size-6 items-center justify-center rounded text-foreground hover:bg-muted disabled:pointer-events-none disabled:opacity-40"
+        >
+          <ChevronRightIcon className="size-4" />
+        </button>
+        <button
+          type="button"
+          onClick={handleReload}
+          disabled={!viewActive}
+          aria-label="Reload"
+          title="Reload"
+          className="flex size-6 items-center justify-center rounded text-foreground hover:bg-muted disabled:pointer-events-none disabled:opacity-40"
+        >
+          <RotateCwIcon className="size-4" />
+        </button>
+        <input
+          type="text"
+          value={currentUrl}
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+          placeholder="Enter a URL"
+          aria-label="Address bar"
+          onChange={(e) => setCurrentUrl(e.target.value)}
+          onFocus={() => {
+            urlEditingRef.current = true;
+          }}
+          onBlur={() => {
+            urlEditingRef.current = false;
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              submitUrl();
+              e.currentTarget.blur();
+            }
+          }}
+          className="h-6 min-w-0 flex-1 rounded-md border border-input bg-transparent px-2 text-foreground text-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring dark:bg-input/30"
+        />
+        <button
+          type="button"
+          onClick={handleDevTools}
+          disabled={!viewActive}
+          aria-label="Toggle DevTools"
+          title="Toggle DevTools"
+          className="flex size-6 items-center justify-center rounded text-foreground hover:bg-muted disabled:pointer-events-none disabled:opacity-40"
+        >
+          <WrenchIcon className="size-4" />
+        </button>
+      </div>
       {viewActive ? (
-        <>
-          <div className="flex shrink-0 items-center gap-1 border-border border-b bg-card px-2 py-1.5">
-            <button
-              type="button"
-              onClick={handleBack}
-              disabled={!canGoBack}
-              aria-label="Go back"
-              title="Back"
-              className="flex size-6 items-center justify-center rounded text-foreground hover:bg-muted disabled:pointer-events-none disabled:opacity-40"
-            >
-              <ChevronLeftIcon className="size-4" />
-            </button>
-            <button
-              type="button"
-              onClick={handleForward}
-              disabled={!canGoForward}
-              aria-label="Go forward"
-              title="Forward"
-              className="flex size-6 items-center justify-center rounded text-foreground hover:bg-muted disabled:pointer-events-none disabled:opacity-40"
-            >
-              <ChevronRightIcon className="size-4" />
-            </button>
-            <button
-              type="button"
-              onClick={handleReload}
-              aria-label="Reload"
-              title="Reload"
-              className="flex size-6 items-center justify-center rounded text-foreground hover:bg-muted"
-            >
-              <RotateCwIcon className="size-4" />
-            </button>
-            <input
-              type="text"
-              value={currentUrl}
-              spellCheck={false}
-              autoCorrect="off"
-              autoCapitalize="off"
-              placeholder="Enter a URL"
-              aria-label="Address bar"
-              onChange={(e) => setCurrentUrl(e.target.value)}
-              onFocus={() => {
-                urlEditingRef.current = true;
-              }}
-              onBlur={() => {
-                urlEditingRef.current = false;
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  submitUrl();
-                  e.currentTarget.blur();
-                }
-              }}
-              className="h-6 min-w-0 flex-1 rounded-md border border-input bg-transparent px-2 text-foreground text-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring dark:bg-input/30"
-            />
-            <button
-              type="button"
-              onClick={handleDevTools}
-              aria-label="Toggle DevTools"
-              title="Toggle DevTools"
-              className="flex size-6 items-center justify-center rounded text-foreground hover:bg-muted"
-            >
-              <WrenchIcon className="size-4" />
-            </button>
-          </div>
-          {/* Measuring region — the native WebContentsView paints over this.
-              flex-1 min-h-0 so it fills everything BELOW the toolbar; its rect
-              is what syncBounds() pushes. */}
-          <div ref={containerRef} className="min-h-0 min-w-0 flex-1" />
-        </>
+        /* Measuring region — the native WebContentsView paints over this.
+           flex-1 min-h-0 so it fills everything BELOW the toolbar; its rect
+           is what syncBounds() pushes. Mounted only while viewActive so the
+           effects never measure an empty div. */
+        <div ref={containerRef} className="min-h-0 min-w-0 flex-1" />
       ) : (
-        <div className="flex h-full flex-1 items-center justify-center bg-card px-6 py-8 text-center text-muted-foreground text-sm">
-          No page open yet — the agent will open pages here.
+        <div className="flex min-h-0 flex-1 items-center justify-center bg-card px-6 py-8 text-center text-muted-foreground text-sm">
+          Enter a URL above to get started — the agent will open pages here too.
         </div>
       )}
     </div>
