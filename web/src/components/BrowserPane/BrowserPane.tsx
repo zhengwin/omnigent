@@ -14,9 +14,13 @@
  *  Lives as the "Browser" tab inside the right Workspace rail (WorkspacePanel),
  *  so it only mounts while that tab is selected. Before a view is attached
  *  (`viewActive` false) it shows a centered empty state; once a view IS attached
- *  it renders the measuring placeholder the native WebContentsView paints over.
- *  The bounds-sync machinery (containerRef + syncBounds + rAF/ResizeObserver
- *  effects) is gated on `viewActive`, so nothing measures an empty-state div.
+ *  it renders a toolbar (URL bar + back/forward/reload + DevTools toggle) above
+ *  the measuring placeholder the native WebContentsView paints over. The pane is
+ *  a flex COLUMN: the toolbar is a fixed-height row ABOVE the measured rect, so
+ *  the native overlay (which paints over the container) never hides it. The
+ *  bounds-sync machinery (containerRef + syncBounds + rAF/ResizeObserver effects)
+ *  is gated on `viewActive`, so nothing measures an empty-state div, and it
+ *  measures only the region BELOW the toolbar.
  *
  *  The agent relay is NOT here — because this component only mounts while its
  *  tab is selected, but the relay must be listening before the first
@@ -29,8 +33,11 @@
  *
  *  Gated on `isElectronShell()` — in a plain browser this renders nothing (the
  *  Browser tab isn't shown there anyway). */
+import { ChevronLeftIcon, ChevronRightIcon, RotateCwIcon, WrenchIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isElectronShell } from "@/lib/nativeBridge";
+import { normalizeTypedUrl } from "@/lib/normalizeTypedUrl";
+import { cn } from "@/lib/utils";
 
 /** Renderer CSS-pixel bounds pushed to the main process (converted to window
  *  DIPs there via the host zoom factor). */
@@ -40,6 +47,14 @@ interface Bounds {
   width: number;
   height: number;
   devicePixelRatio?: number;
+}
+
+/** Result shape shared by the history-navigation bridge calls. */
+interface NavResult {
+  ok: boolean;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+  error?: string;
 }
 
 /** Subset of `window.omnigentDesktop` the pane calls. Typed locally so the
@@ -53,6 +68,16 @@ interface BrowserPaneBridge {
     conversationId: string,
     bounds: Bounds,
   ) => Promise<{ ok: boolean; error?: string }>;
+  browserOpenOrNavigate?: (
+    conversationId: string,
+    url: string,
+    bounds: Bounds | undefined,
+    opts: { force?: boolean } | undefined,
+  ) => Promise<{ ok: boolean; created?: boolean; error?: string }>;
+  browserGoBack?: (conversationId: string) => Promise<NavResult>;
+  browserGoForward?: (conversationId: string) => Promise<NavResult>;
+  browserReload?: (conversationId: string) => Promise<{ ok: boolean; error?: string }>;
+  openBrowserDevTools?: (conversationId: string) => Promise<{ ok: boolean; error?: string }>;
   onBrowserHostActiveChanged?: (
     callback: (payload: { conversationId: string | null }) => void,
   ) => () => void;
@@ -61,6 +86,16 @@ interface BrowserPaneBridge {
   ) => () => void;
   onBrowserViewClosed?: (
     callback: (payload: { conversationId: string; reason: string | null }) => void,
+  ) => () => void;
+  onBrowserUrlChanged?: (
+    callback: (payload: { conversationId: string; url: string }) => void,
+  ) => () => void;
+  onBrowserNavState?: (
+    callback: (payload: {
+      conversationId: string;
+      canGoBack: boolean;
+      canGoForward: boolean;
+    }) => void,
   ) => () => void;
   browserHasView?: (conversationId: string) => Promise<{ exists: boolean }>;
 }
@@ -91,6 +126,18 @@ export function BrowserPane({ conversationId, className }: BrowserPaneProps) {
   // placeholder appears exactly when there's a view to position and disappears
   // the moment it's closed — no empty pane on an idle conversation.
   const [viewActive, setViewActive] = useState(false);
+
+  // Toolbar state. `currentUrl` reflects the real URL of the view (kept honest
+  // by the browser-url-changed event) EXCEPT while the user is editing the
+  // input — we never stomp what they're typing. `urlEditing` (input focused)
+  // gates that. `canGoBack/canGoForward` drive the arrow buttons' disabled
+  // state, pushed by the browser-nav-state event.
+  const [currentUrl, setCurrentUrl] = useState("");
+  // Ref (not state) — read synchronously in the url-changed listener to decide
+  // whether to stomp the input; a stale-closure state read would race.
+  const urlEditingRef = useRef(false);
+  const [canGoBack, setCanGoBack] = useState(false);
+  const [canGoForward, setCanGoForward] = useState(false);
 
   // NOTE: the agent relay is NOT mounted here. BrowserPane only mounts when the
   // Browser tab is selected, but the relay must be listening BEFORE the first
@@ -140,6 +187,77 @@ export function BrowserPane({ conversationId, className }: BrowserPaneProps) {
       unsubClosed?.();
     };
   }, [conversationId, electron]);
+
+  // Live-track the real URL + back/forward availability. SP2K's URL bar goes
+  // stale (it only sets the value on explicit navigate); we subscribe to the
+  // main process's did-navigate listeners so redirects, in-page link clicks,
+  // and agent navigation all keep the bar honest. Crucially we DON'T overwrite
+  // the input while the user is editing it (urlEditingRef) — only when they're
+  // not focused — so their typing is never fought.
+  useEffect(() => {
+    if (!electron) return;
+    const bridge = getBridge();
+    if (!bridge) return;
+    const unsubUrl = bridge.onBrowserUrlChanged?.((payload) => {
+      if (payload.conversationId !== conversationId) return;
+      if (urlEditingRef.current) return;
+      setCurrentUrl(payload.url);
+    });
+    const unsubNav = bridge.onBrowserNavState?.((payload) => {
+      if (payload.conversationId !== conversationId) return;
+      setCanGoBack(payload.canGoBack);
+      setCanGoForward(payload.canGoForward);
+    });
+    return () => {
+      unsubUrl?.();
+      unsubNav?.();
+    };
+  }, [conversationId, electron]);
+
+  // ── Toolbar handlers ─────────────────────────────────────────────────────
+
+  // Submit the URL bar. Normalize the typed value (add scheme) and reuse the
+  // relay's own navigate path with force:true so it reloads even if the typed
+  // URL matches the current one (explicit "go there" intent).
+  const submitUrl = useCallback(() => {
+    const bridge = getBridge();
+    if (!bridge?.browserOpenOrNavigate) return;
+    const raw = currentUrl.trim();
+    if (!raw) return;
+    const navUrl = normalizeTypedUrl(raw);
+    setCurrentUrl(navUrl);
+    void bridge.browserOpenOrNavigate(conversationId, navUrl, undefined, { force: true });
+  }, [conversationId, currentUrl]);
+
+  const handleBack = useCallback(() => {
+    const bridge = getBridge();
+    void bridge?.browserGoBack?.(conversationId).then((r) => {
+      if (r?.ok) {
+        setCanGoBack(!!r.canGoBack);
+        setCanGoForward(!!r.canGoForward);
+      }
+    });
+  }, [conversationId]);
+
+  const handleForward = useCallback(() => {
+    const bridge = getBridge();
+    void bridge?.browserGoForward?.(conversationId).then((r) => {
+      if (r?.ok) {
+        setCanGoBack(!!r.canGoBack);
+        setCanGoForward(!!r.canGoForward);
+      }
+    });
+  }, [conversationId]);
+
+  const handleReload = useCallback(() => {
+    const bridge = getBridge();
+    void bridge?.browserReload?.(conversationId);
+  }, [conversationId]);
+
+  const handleDevTools = useCallback(() => {
+    const bridge = getBridge();
+    void bridge?.openBrowserDevTools?.(conversationId);
+  }, [conversationId]);
 
   // Measure the placeholder and push bounds to the main process. These are
   // renderer CSS pixels; the main process converts to WebContentsView DIPs
@@ -260,27 +378,100 @@ export function BrowserPane({ conversationId, className }: BrowserPaneProps) {
   // split pane. The relay is a no-op there anyway.
   if (!electron) return null;
 
-  // In the Electron shell the pane ALWAYS occupies its half of the row. Two
-  // inner states:
-  //   - viewActive: the measuring placeholder — the native WebContentsView
-  //     paints over it. `containerRef` + syncBounds + the rAF/observer effects
-  //     (all gated on viewActive above) keep it positioned.
-  //   - !viewActive: a centered empty state. NO containerRef here, so no bounds
-  //     are measured off an empty div; the effects stay dormant until the first
+  // In the Electron shell the pane ALWAYS occupies its half of the row, as a
+  // FLEX COLUMN: an optional toolbar row (shrink-0) above the content area.
+  //
+  // LAYOUT TRAP (verified): the native WebContentsView paints OVER the measured
+  // `containerRef` rect. So the toolbar must live ABOVE that rect, never inside
+  // it — otherwise the native overlay hides it. The measuring container is the
+  // LAST child, `flex-1 min-h-0` (NOT inset:0 filling the whole wrapper), so
+  // getBoundingClientRect() returns only the region below the toolbar and the
+  // native view fills exactly that.
+  //
+  // Two inner states:
+  //   - viewActive: toolbar + measuring placeholder. `containerRef` + syncBounds
+  //     + the rAF/observer effects (all gated on viewActive above) keep the
+  //     native view positioned over the container.
+  //   - !viewActive: a centered empty state, NO toolbar (a dead toolbar with
+  //     nothing to drive would be noise) and NO containerRef (nothing measures
+  //     an empty div). The effects stay dormant until the first
   //     browser-view-created / host-active signal flips viewActive true.
   return (
     <div
-      className={className}
+      className={cn("flex min-h-0 min-w-0 flex-col", className)}
       data-browser-pane-conversation={conversationId}
-      style={{ position: "relative", flex: 1, minWidth: 0, minHeight: 0 }}
     >
       {viewActive ? (
-        // The placeholder only MEASURES — the native WebContentsView paints
-        // over it. Fills the wrapper so its rect equals the pane's rect.
-        <div
-          ref={containerRef}
-          style={{ position: "absolute", inset: 0, minWidth: 0, minHeight: 0 }}
-        />
+        <>
+          <div className="flex shrink-0 items-center gap-1 border-border border-b bg-card px-2 py-1.5">
+            <button
+              type="button"
+              onClick={handleBack}
+              disabled={!canGoBack}
+              aria-label="Go back"
+              title="Back"
+              className="flex size-6 items-center justify-center rounded text-foreground hover:bg-muted disabled:pointer-events-none disabled:opacity-40"
+            >
+              <ChevronLeftIcon className="size-4" />
+            </button>
+            <button
+              type="button"
+              onClick={handleForward}
+              disabled={!canGoForward}
+              aria-label="Go forward"
+              title="Forward"
+              className="flex size-6 items-center justify-center rounded text-foreground hover:bg-muted disabled:pointer-events-none disabled:opacity-40"
+            >
+              <ChevronRightIcon className="size-4" />
+            </button>
+            <button
+              type="button"
+              onClick={handleReload}
+              aria-label="Reload"
+              title="Reload"
+              className="flex size-6 items-center justify-center rounded text-foreground hover:bg-muted"
+            >
+              <RotateCwIcon className="size-4" />
+            </button>
+            <input
+              type="text"
+              value={currentUrl}
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="off"
+              placeholder="Enter a URL"
+              aria-label="Address bar"
+              onChange={(e) => setCurrentUrl(e.target.value)}
+              onFocus={() => {
+                urlEditingRef.current = true;
+              }}
+              onBlur={() => {
+                urlEditingRef.current = false;
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submitUrl();
+                  e.currentTarget.blur();
+                }
+              }}
+              className="h-6 min-w-0 flex-1 rounded-md border border-input bg-transparent px-2 text-foreground text-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring dark:bg-input/30"
+            />
+            <button
+              type="button"
+              onClick={handleDevTools}
+              aria-label="Toggle DevTools"
+              title="Toggle DevTools"
+              className="flex size-6 items-center justify-center rounded text-foreground hover:bg-muted"
+            >
+              <WrenchIcon className="size-4" />
+            </button>
+          </div>
+          {/* Measuring region — the native WebContentsView paints over this.
+              flex-1 min-h-0 so it fills everything BELOW the toolbar; its rect
+              is what syncBounds() pushes. */}
+          <div ref={containerRef} className="min-h-0 min-w-0 flex-1" />
+        </>
       ) : (
         <div className="flex h-full flex-1 items-center justify-center bg-card px-6 py-8 text-center text-muted-foreground text-sm">
           No page open yet — the agent will open pages here.
