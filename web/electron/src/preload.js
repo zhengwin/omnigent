@@ -209,6 +209,63 @@ contextBridge.exposeInMainWorld("omnigentDesktop", {
     ipcRenderer.on("browser-view-closed", listener);
     return () => ipcRenderer.removeListener("browser-view-closed", listener);
   },
+
+  // ── Toolbar: history navigation + reload ───────────────────────────────
+  // Drive the conversation's view through its own history. Each resolves
+  // `{ ok, canGoBack?, canGoForward?, error? }` so the toolbar can refresh its
+  // disabled-button state without waiting for the browser-nav-state event.
+
+  /**
+   * Navigate the conversation's view back one history entry (no-op if it can't).
+   * @param {string} conversationId
+   * @returns {Promise<{ ok: boolean, canGoBack?: boolean, canGoForward?: boolean, error?: string }>}
+   */
+  browserGoBack: (conversationId) =>
+    ipcRenderer.invoke("omnigent:browser-go-back", { conversationId }),
+  /**
+   * Navigate the conversation's view forward one history entry.
+   * @param {string} conversationId
+   * @returns {Promise<{ ok: boolean, canGoBack?: boolean, canGoForward?: boolean, error?: string }>}
+   */
+  browserGoForward: (conversationId) =>
+    ipcRenderer.invoke("omnigent:browser-go-forward", { conversationId }),
+  /**
+   * Reload the conversation's view.
+   * @param {string} conversationId
+   * @returns {Promise<{ ok: boolean, error?: string }>}
+   */
+  browserReload: (conversationId) =>
+    ipcRenderer.invoke("omnigent:browser-reload", { conversationId }),
+  /**
+   * Toggle Chrome DevTools (docked bottom) for the conversation's view.
+   * @param {string} conversationId
+   * @returns {Promise<{ ok: boolean, error?: string }>}
+   */
+  openBrowserDevTools: (conversationId) =>
+    ipcRenderer.invoke("omnigent:open-browser-devtools", { conversationId }),
+  /**
+   * Subscribe to the REAL url of a conversation's view as it navigates
+   * (loadURL, redirects, back/forward, in-page link clicks). Lets the URL bar
+   * stay honest instead of going stale. Returns an unsubscribe.
+   * @param {(payload: { conversationId: string, url: string }) => void} callback
+   * @returns {() => void}
+   */
+  onBrowserUrlChanged: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("browser-url-changed", listener);
+    return () => ipcRenderer.removeListener("browser-url-changed", listener);
+  },
+  /**
+   * Subscribe to back/forward availability for a conversation's view, pushed
+   * whenever it navigates. Lets the toolbar enable/disable the arrows.
+   * @param {(payload: { conversationId: string, canGoBack: boolean, canGoForward: boolean }) => void} callback
+   * @returns {() => void}
+   */
+  onBrowserNavState: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("browser-nav-state", listener);
+    return () => ipcRenderer.removeListener("browser-nav-state", listener);
+  },
 });
 
 // Setup-page bridge: persist + navigate to a server URL, and read the saved
