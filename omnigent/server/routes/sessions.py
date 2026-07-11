@@ -154,7 +154,9 @@ from omnigent.server.auth import (
     LEVEL_READ,
     RESERVED_USER_PUBLIC,
     AuthProvider,
+    SharingMode,
     local_single_user_enabled,
+    workspace_sharing_blocked,
 )
 from omnigent.server.bundles import bundle_location, validate_agent_bundle
 from omnigent.server.host_registry import HostConnection, HostRegistry, RunnerExitReports
@@ -2048,6 +2050,42 @@ def _session_status_with_child_rollup(
     return own_status
 
 
+async def _best_effort_stop(
+    session_id: str,
+    conversation_store: ConversationStore,
+    runner_router: Any,
+) -> None:
+    """Stop a running session before a destructive lifecycle action.
+
+    Mirrors the client-side stop-then-archive/delete pattern: if the
+    session (or any direct sub-agent child) is still running, attempt to
+    stop it via the runner. Failures are swallowed so the caller can
+    always proceed — the session must remain deletable/archivable even
+    when the runner is offline or unreachable.
+
+    :param session_id: Session/conversation identifier.
+    :param conversation_store: Store for child-id lookup.
+    :param runner_router: The ``RunnerRouter`` for runner-client
+        resolution, or ``None`` in tests / in-process setups.
+    """
+    try:
+        child_ids_map = await asyncio.to_thread(
+            conversation_store.list_child_conversation_ids_by_parent,
+            [session_id],
+        )
+        child_ids = child_ids_map.get(session_id, [])
+        status = _session_status_with_child_rollup(session_id, child_ids)
+        if status != "running":
+            return
+        await _stop_session_via_runner(session_id, runner_router)
+    except Exception:  # noqa: BLE001 — best-effort; must not block archive/delete
+        _logger.debug(
+            "Best-effort stop failed for %s; proceeding anyway",
+            session_id,
+            exc_info=True,
+        )
+
+
 @dataclass(frozen=True)
 class SessionLiveness:
     """
@@ -2179,6 +2217,9 @@ def _build_session_list_item(
         ),
         viewer_last_seen=viewer_last_seen,
         viewer_unread=viewer_unread,
+        # Transient; set by the store only on a content search. The WS
+        # push-stream path leaves it None (no query in flight there).
+        search_snippet=conv.search_snippet,
     )
 
 
@@ -14902,7 +14943,14 @@ def create_sessions_router(
         # ``permission_level === null`` full-access sentinel in the web sidebar
         # is never tripped by a streamed null. The GET list endpoint keeps
         # exclude_none — it replaces whole pages, so it has nothing to clear.
-        return [item.model_dump() for item in items]
+        #
+        # search_snippet is excluded: it is search-only (populated just by
+        # GET /v1/sessions?search_query=), so this no-query path always has it
+        # None. Dumping it as an explicit null would overwrite a snippet the
+        # search response put in the client cache, making the palette's match
+        # preview flicker away on the next stream tick. Omitting the key leaves
+        # the cached snippet untouched.
+        return [item.model_dump(exclude={"search_snippet"}) for item in items]
 
     @router.websocket("/sessions/updates")
     async def session_updates(websocket: WebSocket) -> None:
@@ -15209,6 +15257,8 @@ def create_sessions_router(
         await _require_access(
             user_id, session_id, required_level, permission_store, conversation_store
         )
+        if body.archived is True:
+            await _best_effort_stop(session_id, conversation_store, runner_router)
         if body.runner_id is not None and permission_store is not None:
             if not check_session_access(
                 user_id, session_id, LEVEL_OWNER, permission_store, conversation_store
@@ -20201,6 +20251,7 @@ def create_sessions_router(
                 "Session not found",
                 code=ErrorCode.NOT_FOUND,
             )
+        await _best_effort_stop(session_id, conversation_store, runner_router)
         # Runner-side resource cleanup is best-effort: if the bound
         # runner is offline or unbound, the session must still be
         # deletable. Server-owned records (files and conversation row
@@ -20339,6 +20390,36 @@ def create_sessions_router(
         await _require_access(
             user_id, session_id, LEVEL_MANAGE, permission_store, conversation_store
         )
+        # Server-wide sharing policy gate (see SharingMode). Applied only
+        # to *new* grants — revoke/list and owner grants are unaffected.
+        # ``getattr`` default keeps a hand-built app (a router mounted without
+        # create_app, e.g. in a focused test) from AttributeError-ing; every
+        # production path sets these via create_app.
+        _sharing_mode = getattr(request.app.state, "sharing_mode", lambda: SharingMode.ON)()
+        if _sharing_mode == SharingMode.OFF:
+            raise OmnigentError(
+                "Sharing has been disabled for this Omnigent server.",
+                code=ErrorCode.FORBIDDEN,
+            )
+        # RESTRICTED_READ_ONLY blocks sharing entirely (even read) for a session
+        # whose cwd is a home dir or the filesystem root — that workspace is too
+        # broad to expose. Other sessions fall through to the read-only cap.
+        if _sharing_mode == SharingMode.RESTRICTED_READ_ONLY:
+            _conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+            if _conv is not None and workspace_sharing_blocked(_conv.workspace):
+                raise OmnigentError(
+                    "This session's working directory (a home or root directory) "
+                    "cannot be shared on this Omnigent server.",
+                    code=ErrorCode.FORBIDDEN,
+                )
+        if (
+            _sharing_mode in (SharingMode.READ_ONLY, SharingMode.RESTRICTED_READ_ONLY)
+            and body.level > LEVEL_READ
+        ):
+            raise OmnigentError(
+                "Sharing is limited to read-only access on this Omnigent server.",
+                code=ErrorCode.FORBIDDEN,
+            )
         if permission_store is None:
             raise OmnigentError(
                 "Permissions not enabled",
@@ -20349,11 +20430,21 @@ def create_sessions_router(
                 "Cannot modify your own permissions",
                 code=ErrorCode.FORBIDDEN,
             )
-        if body.user_id == RESERVED_USER_PUBLIC and body.level > LEVEL_READ:
-            raise OmnigentError(
-                "Public access is limited to read-only (level 1)",
-                code=ErrorCode.INVALID_INPUT,
-            )
+        if body.user_id == RESERVED_USER_PUBLIC:
+            # Public-access kill switch, independent of the sharing_mode gate
+            # above (see app.state.public_sharing). Blocks the anyone-with-the
+            # -link grant while leaving user-to-user sharing intact. ``getattr``
+            # default mirrors the sharing_mode read above (hand-built apps).
+            if not getattr(request.app.state, "public_sharing", lambda: True)():
+                raise OmnigentError(
+                    "Public access has been disabled for this Omnigent server.",
+                    code=ErrorCode.FORBIDDEN,
+                )
+            if body.level > LEVEL_READ:
+                raise OmnigentError(
+                    "Public access is limited to read-only (level 1)",
+                    code=ErrorCode.INVALID_INPUT,
+                )
         existing = await asyncio.to_thread(permission_store.get, body.user_id, session_id)
         if existing is not None and existing.level == LEVEL_OWNER:
             raise OmnigentError(
