@@ -77,21 +77,20 @@ function renderHeader(props: {
 afterEach(cleanup);
 
 describe("ChatHeader — deployed Share presentation", () => {
-  it("matches the compact Vercel action", () => {
+  it("matches the compact Omnigent theme action", () => {
     renderHeader({ sidebarOpen: true, canShare: true });
 
     const share = screen.getByRole("button", { name: "Share session" });
     expect(share).toHaveClass(
       "h-6",
-      "gap-1",
-      "rounded-[6px]",
-      "px-2",
+      "rounded-sm",
+      "px-2.5",
       "text-[13px]",
-      "share-button-glassy",
+      "share-button-header",
       "md:inline-flex",
     );
     expect(share).not.toHaveClass("h-8", "rounded-full", "px-6");
-    expect(share.querySelector(".lucide-user-plus")).not.toBeNull();
+    expect(share.querySelector(".lucide-user-round-plus")).not.toBeNull();
   });
 
   it("keeps the compact geometry when sharing is disabled", () => {
@@ -105,15 +104,8 @@ describe("ChatHeader — deployed Share presentation", () => {
     const share = screen.getByRole("button", { name: "Share session" });
     expect(share).toBeDisabled();
     expect(share).toHaveAttribute("title", "Sharing is unavailable");
-    expect(share).toHaveClass(
-      "h-6",
-      "gap-1",
-      "rounded-[6px]",
-      "px-2",
-      "text-[13px]",
-      "share-button-glassy",
-    );
-    expect(share.querySelector(".lucide-user-plus")).not.toBeNull();
+    expect(share).toHaveClass("h-6", "rounded-sm", "px-2.5", "text-[13px]", "share-button-header");
+    expect(share.querySelector(".lucide-user-round-plus")).not.toBeNull();
   });
 });
 

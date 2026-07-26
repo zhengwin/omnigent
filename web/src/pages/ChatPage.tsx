@@ -286,8 +286,11 @@ export function collectBubbleMarkdown(items: RenderItem[]): string {
     .trim();
 }
 
-// All chat-column elements must share this width to stay aligned.
-const CHAT_COLUMN_WIDTH = "max-w-3xl min-[1921px]:max-w-4xl min-[2561px]:max-w-5xl";
+// Keep the transcript deliberately narrow for comfortable long-form reading.
+// The composer retains main's wider responsive geometry; changing its shape is
+// intentionally outside this theme and chat-card polish.
+const CHAT_COLUMN_WIDTH = "max-w-[768px]";
+const COMPOSER_COLUMN_WIDTH = "max-w-3xl min-[1921px]:max-w-4xl min-[2561px]:max-w-5xl";
 
 const TABLE_SEPARATOR_RE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
 
@@ -1206,7 +1209,7 @@ interface SessionLayoutProps {
  */
 function SessionLayout({ mainAgent }: SessionLayoutProps) {
   return (
-    <div className="flex min-h-0 flex-1 overflow-hidden">
+    <div className="flex min-h-0 flex-1 overflow-hidden pt-14 md:pt-10">
       <div className="flex min-w-0 flex-1 flex-col">{mainAgent}</div>
     </div>
   );
@@ -1703,7 +1706,7 @@ function MainAgentSurface({
               rail is hidden on mobile, so the extra left padding is md-only. */}
           <ConversationContent
             className={cn(
-              "chat-conversation-content mx-auto w-full gap-4 pt-20 pb-6 md:pl-12",
+              "chat-conversation-content mx-auto w-full gap-2 pt-6 pb-6",
               CHAT_COLUMN_WIDTH,
             )}
           >
@@ -1728,14 +1731,18 @@ function MainAgentSurface({
                 <RunnerStartingIndicator variant="hero" />
               ) : (
                 <ConversationEmptyState>
-                  <div className="space-y-1.5">
-                    <h3 className="text-2xl font-medium tracking-[-0.02em]">
-                      What should we work on?
+                  <div className="flex flex-col items-center gap-2.5 text-center">
+                    <OttoIcon
+                      className="buoyant-enter otto-working-shadow h-14 w-auto"
+                      aria-hidden="true"
+                    />
+                    <h3 className="brand-display-title buoyant-enter buoyant-enter--title text-2xl font-[450] tracking-[-0.025em]">
+                      Ready when you are
                     </h3>
-                    <p className="text-muted-foreground text-base">
+                    <p className="buoyant-enter buoyant-enter--composer text-muted-foreground text-base">
                       {agentsError
                         ? `Failed to load agents: ${agentsError instanceof Error ? agentsError.message : String(agentsError)}`
-                        : "Send a message to get started."}
+                        : "Describe the outcome; Omnigent will handle the steps."}
                     </p>
                   </div>
                 </ConversationEmptyState>
@@ -2269,9 +2276,9 @@ export function JumpToTopButton({
   const SCROLL_REVEAL_MS = 2000;
 
   // Pixels below the conversation's top edge that count as "hovering the top".
-  // Comfortably clears the pill (anchored at the fade border, ~50px) so moving
-  // onto it to click never drops the hover state.
-  const HOVER_BAND_PX = 140;
+  // Covers the compact pill near the fade edge without turning a large
+  // portion of the transcript into an invisible hover target.
+  const HOVER_BAND_PX = 72;
 
   // Hover detection on the wrapper so the pill (a wrapper child) stays in-band.
   useEffect(() => {
@@ -2374,12 +2381,8 @@ export function JumpToTopButton({
 
   return (
     <div
-      // top 50px centers the pill on the chat-scroll-fade border (the mask ramps
-      // 48px→80px), just below the h-14 ChatHeader. z-40 > header z-30. On the
-      // iOS shell the header and fade border shift down by the safe-area inset
-      // (see .chat-scroll-fade in index.css), so add --omnigent-inset-top here
-      // too to keep the pill centered on the border. The var is 0px off-shell.
-      style={{ top: "calc(50px + var(--omnigent-inset-top))" }}
+      // Center the pill on the compact 32px fade ramp.
+      style={{ top: "calc(8px + var(--omnigent-inset-top))" }}
       className={cn(
         "pointer-events-none absolute inset-x-0 z-40 flex justify-center transition-opacity duration-150",
         visible ? "opacity-100" : "opacity-0",
@@ -2398,7 +2401,7 @@ export function JumpToTopButton({
         tabIndex={visible ? 0 : -1}
         aria-hidden={!visible}
         className={cn(
-          "h-7 gap-1.5 rounded-full px-3 text-xs shadow-sm",
+          "h-7 gap-1.5 rounded-sm px-3 text-xs shadow-sm",
           // Force an OPAQUE background in both themes and on hover. The outline
           // variant's hover (bg-muted) is a translucent black wash (--muted is
           // #0000000f), so over the faded chat text behind the pill it bleeds
@@ -2920,14 +2923,14 @@ function ConnectedTerminalFirstPill({
   return (
     <div
       className={cn(
-        "terminal-first-switcher-container mx-auto flex w-full items-center justify-center px-6 pb-1.5",
+        "terminal-first-switcher-container mx-auto flex w-full items-center justify-center px-6 pb-1.5 md:hidden",
         CHAT_COLUMN_WIDTH,
       )}
     >
       <div
         role="group"
         aria-label="View mode"
-        className="terminal-first-switcher flex items-center gap-1 rounded-full border border-border bg-card/90 p-1 text-xs shadow-sm"
+        className="terminal-first-switcher flex items-center gap-1 rounded-sm border border-border bg-card/90 p-1 text-xs shadow-sm"
       >
         <div className="flex items-center gap-0.5">
           <button
@@ -2936,7 +2939,7 @@ function ConnectedTerminalFirstPill({
             aria-label="Chat"
             onClick={() => setView("chat")}
             className={cn(
-              "terminal-first-switcher-option flex cursor-pointer items-center gap-1 rounded-full px-2 py-0.5 transition-colors",
+              "terminal-first-switcher-option flex cursor-pointer items-center gap-1 rounded-sm px-2 py-0.5 transition-colors",
               view === "chat"
                 ? "bg-muted text-foreground"
                 : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
@@ -2953,7 +2956,7 @@ function ConnectedTerminalFirstPill({
             title={terminalStartingUp ? "Terminal is starting up…" : undefined}
             onClick={() => setView("terminal")}
             className={cn(
-              "terminal-first-switcher-option flex cursor-pointer items-center gap-1 rounded-full px-2 py-0.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+              "terminal-first-switcher-option flex cursor-pointer items-center gap-1 rounded-sm px-2 py-0.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50",
               view === "terminal"
                 ? "bg-muted text-foreground"
                 : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
@@ -3129,7 +3132,7 @@ function UserBubble({ bubble }: { bubble: Extract<Bubble, { kind: "user" }> }) {
       data-testid="message-bubble"
       data-role="user"
       data-user-message-id={bubble.itemId}
-      className="max-w-3xl"
+      className="max-w-[960px]"
     >
       {/* w-fit + ml-auto shrink-wrap the row so the author avatar sits
           immediately left of the right-aligned bubble (the bubble's own
@@ -3265,6 +3268,18 @@ function AssistantBubble({ bubble }: { bubble: Extract<Bubble, { kind: "assistan
   const { isCopied, handleCopy } = useCopyMessage(() => collectBubbleMarkdown(bubble.items));
   // null outside AppShell's provider (isolated tests) → hide the action.
   const forkDialog = useForkDialog();
+  const previousLifecycleRef = useRef(bubble.lifecycle);
+  const [isSettling, setIsSettling] = useState(false);
+
+  useEffect(() => {
+    const previousLifecycle = previousLifecycleRef.current;
+    previousLifecycleRef.current = bubble.lifecycle;
+    if (previousLifecycle !== "streaming" || bubble.lifecycle !== "completed") return;
+
+    setIsSettling(true);
+    const settleTimer = window.setTimeout(() => setIsSettling(false), 220);
+    return () => window.clearTimeout(settleTimer);
+  }, [bubble.lifecycle]);
 
   if (bubble.items.length === 0) return null;
 
@@ -3281,7 +3296,7 @@ function AssistantBubble({ bubble }: { bubble: Extract<Bubble, { kind: "assistan
         from="assistant"
         data-testid="message-bubble"
         data-role="assistant"
-        className={isWide ? "max-w-full" : "max-w-3xl"}
+        className={cn("max-w-full", isSettling && "buoyant-message-settle")}
       >
         <MessageContent className={isWide ? "w-full" : undefined}>
           <BlockRenderer items={bubble.items} sessionStatus={sessionStatus} />
@@ -3515,7 +3530,11 @@ function ContextRing({ contextWindow, tokensUsed }: { contextWindow: number; tok
   const usedPct = Math.round(pct * 100);
 
   const color =
-    pct > 0.8 ? "text-destructive" : pct > 0.6 ? "text-warning" : "text-muted-foreground";
+    pct > 0.8
+      ? "text-destructive"
+      : pct > 0.6
+        ? "text-warning-foreground"
+        : "text-muted-foreground";
 
   return (
     <Tooltip>
@@ -3635,7 +3654,7 @@ export function composerHarnessLabel(
  * Status-line tray tucked behind the composer card: the worktree branch
  * on the left (truncated to an ellipsis so the tray never wraps), the
  * model/effort + context ring on the right. Shares the card's background so the two
- * read as one rounded shape: the card keeps its full rounded-2xl and
+ * read as one rounded shape: the card keeps its full composer radius and
  * paints on top (it's position:relative), while this in-flow sibling is
  * pulled up behind it so a rounded shelf peeks out below the card's
  * bottom edge — the card's own bottom border is the divider. Owns the
@@ -3711,7 +3730,7 @@ function ComposerStatusLine({
         // with its own border/shadow, duplicating the composer's chrome —
         // and matches the home composer's footer tray surface.
         "mx-auto -mt-4 flex w-full items-center gap-3 rounded-b-2xl bg-tray/40 px-4 pb-1.5 pt-5.5",
-        CHAT_COLUMN_WIDTH,
+        COMPOSER_COLUMN_WIDTH,
       )}
     >
       {/* Left: host badge then worktree branch. Always holds the flex-1 slot
@@ -3806,7 +3825,7 @@ function SubagentComposerTray({ label }: { label: string }) {
       data-testid="composer-subagent-tray"
       className={cn(
         "mx-auto -mb-4 flex w-full items-center gap-1.5 rounded-t-2xl bg-brand-accent/10 px-4 pt-1.5 pb-5.5 text-xs text-brand-accent",
-        CHAT_COLUMN_WIDTH,
+        COMPOSER_COLUMN_WIDTH,
       )}
     >
       <BotIcon className="size-3.5 shrink-0" aria-hidden="true" />
@@ -4668,7 +4687,7 @@ export function Composer({
         }}
         onSteer={(queueId) => steerMessage(queueId)}
         onReorder={reorderQueuedMessage}
-        widthClassName={CHAT_COLUMN_WIDTH}
+        widthClassName={COMPOSER_COLUMN_WIDTH}
       />
       {/* Sub-agent context tray — peeks above the card; reserves its own
           layout slot so the card sits below it (see SubagentComposerTray).
@@ -4688,7 +4707,7 @@ export function Composer({
       <div
         className={cn(
           "relative mx-auto flex w-full flex-col rounded-2xl border border-border bg-card dark:bg-card-solid shadow-sm transition",
-          CHAT_COLUMN_WIDTH,
+          COMPOSER_COLUMN_WIDTH,
           isDragActive && "ring-2 ring-ring ring-inset",
         )}
         onDrop={handleDrop}

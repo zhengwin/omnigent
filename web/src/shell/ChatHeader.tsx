@@ -11,7 +11,7 @@ import {
   PanelRightIcon,
   ShareIcon,
   TerminalIcon,
-  UserPlusIcon,
+  UserRoundPlusIcon,
 } from "lucide-react";
 import { Link } from "@/lib/routing";
 import { Button } from "@/components/ui/button";
@@ -140,10 +140,8 @@ interface ChatHeaderProps {
  *
  * Rendered as an **absolute overlay** (``z-30``) spanning the full width
  * of the chat + workspace group. The bar paints no background — the app
- * canvas shows through, and chat content dissolves before it slides
- * under the controls (the conversation viewport's ``chat-scroll-fade``
- * mask, index.css; chat reserves clearance via ``pt-20``,
- * terminal-first via ``pt-14``). Left slot: open-sidebar +
+ * canvas shows through. `SessionLayout` reserves the exact header height, and
+ * the conversation viewport uses only a short edge fade as content scrolls. Left slot: open-sidebar +
  * back-to-parent. Right slot: desktop action buttons (Agent info ·
  * Share · right-panel toggle), a mobile three-dot menu mirroring the
  * same actions, and a mobile FAB that opens the rail tabs as
@@ -175,14 +173,13 @@ export function ChatHeader({
 }: ChatHeaderProps) {
   return (
     <header
+      data-testid="chat-header"
       className={cn(
-        // h-14 fixes the bar at 56px: 12px symmetric vertical padding around
-        // the 32px controls. No own background — the app canvas shows
-        // through (a scrim can't track the canvas gradient).
-        // Scrolled chat text can't render through the controls because the
-        // conversation viewport fades its top edge instead (chat-scroll-fade
-        // in index.css, applied in ChatPage).
-        "chat-header absolute inset-x-0 top-0 z-30 flex h-14 items-center justify-between px-2 py-3 md:right-[var(--workspace-panel-offset,0px)]",
+        // Mobile keeps the existing 56px touch-friendly bar. Desktop uses
+        // compact 40px session chrome: title left, view mode centered, and
+        // actions right. The header stays transparent so every theme keeps
+        // its canvas treatment instead of painting a separate top strip.
+        "chat-header absolute inset-x-0 top-0 z-30 flex h-14 items-center justify-between px-2 py-3 md:right-[var(--workspace-panel-offset,0px)] md:h-10 md:py-2",
       )}
     >
       {/* Left slot: sidebar toggle (when sidebar is closed) and a
@@ -195,7 +192,12 @@ export function ChatHeader({
           where the macOS Electron shell's traffic lights float — drop
           just this slot below them (the right action cluster stays up
           in the title-bar strip). Inert outside the shell (index.css). */}
-      <div className={cn("flex items-center gap-1", !sidebarOpen && "traffic-light-clearance")}>
+      <div
+        className={cn(
+          "flex min-w-0 flex-1 items-center gap-1",
+          !sidebarOpen && "traffic-light-clearance",
+        )}
+      >
         {!sidebarOpen && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -331,13 +333,11 @@ export function ChatHeader({
                   aria-label="Share session"
                   disabled
                   title={shareDisabledReason}
-                  // share-button-glassy (index.css) paints the pink gradient,
-                  // shadow, and white text in both light and dark mode.
-                  className="share-button-glassy h-6 gap-1 rounded-[6px] px-2 text-[13px] font-normal text-white"
+                  // share-button-header (index.css) paints the quiet branded
+                  // secondary surface in both light and dark mode.
+                  className="share-button-header h-6 rounded-sm px-2.5 text-[13px] font-normal"
                 >
-                  <span className="flex size-4 shrink-0 items-center justify-center">
-                    <UserPlusIcon />
-                  </span>
+                  <UserRoundPlusIcon className="size-4" />
                   Share
                 </Button>
               </span>
@@ -349,13 +349,11 @@ export function ChatHeader({
             type="button"
             aria-label="Share session"
             onClick={onShare}
-            // share-button-glassy (index.css) paints the pink gradient,
-            // shadow, and white text in both light and dark mode.
-            className="share-button-glassy hidden h-6 gap-1 rounded-[6px] px-2 text-[13px] font-normal text-white md:inline-flex"
+            // share-button-header (index.css) paints the quiet branded
+            // secondary surface in both light and dark mode.
+            className="share-button-header hidden h-6 rounded-sm px-2.5 text-[13px] font-normal text-foreground md:inline-flex"
           >
-            <span className="flex size-4 shrink-0 items-center justify-center">
-              <UserPlusIcon />
-            </span>
+            <UserRoundPlusIcon className="size-4" />
             Share
           </Button>
         ) : null}
@@ -365,7 +363,7 @@ export function ChatHeader({
               <Button
                 type="button"
                 variant="ghost"
-                size="icon"
+                size="icon-xs"
                 aria-label={rightPanelOpen ? "Collapse right panel" : "Expand right panel"}
                 onClick={onToggleRightPanel}
                 className="hidden md:inline-flex text-muted-foreground hover:text-foreground"
@@ -444,7 +442,7 @@ export function ChatHeader({
                       TAB_BADGE_BASE,
                       "ml-auto",
                       mobileMenu.subagentsWorking > 0
-                        ? "bg-success/15 text-success"
+                        ? "bg-success/15 text-success-foreground"
                         : "bg-muted text-muted-foreground",
                     )}
                   >
