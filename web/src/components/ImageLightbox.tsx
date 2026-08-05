@@ -12,6 +12,7 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 import { XIcon, ZoomInIcon, ZoomOutIcon } from "lucide-react";
 
 import { getEmbedRoot } from "@/lib/host";
+import { useSuppressBrowserView } from "@/hooks/useSuppressBrowserView";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -239,24 +240,31 @@ export function ImageLightboxProvider({ children }: { children: React.ReactNode 
             // (and elsewhere) from dismissing the preview.
             onInteractOutside={(e) => e.preventDefault()}
           >
-            <DialogPrimitive.Title className="sr-only">
-              {image?.alt || "Image preview"}
-            </DialogPrimitive.Title>
-            {/* key by src so zoom/pan state resets when a new image opens. */}
-            {image && <ZoomViewer key={image.src} image={image} />}
-            <DialogPrimitive.Close asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="absolute top-3 right-3 bg-background/70 hover:bg-background/90"
-              >
-                <XIcon />
-                <span className="sr-only">Close</span>
-              </Button>
-            </DialogPrimitive.Close>
+            <LightboxBrowserViewSuppression>
+              <DialogPrimitive.Title className="sr-only">
+                {image?.alt || "Image preview"}
+              </DialogPrimitive.Title>
+              {/* key by src so zoom/pan state resets when a new image opens. */}
+              {image && <ZoomViewer key={image.src} image={image} />}
+              <DialogPrimitive.Close asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="absolute top-3 right-3 bg-background/70 hover:bg-background/90"
+                >
+                  <XIcon />
+                  <span className="sr-only">Close</span>
+                </Button>
+              </DialogPrimitive.Close>
+            </LightboxBrowserViewSuppression>
           </DialogPrimitive.Content>
         </DialogPrimitive.Portal>
       </DialogPrimitive.Root>
     </LightboxContext.Provider>
   );
+}
+
+function LightboxBrowserViewSuppression({ children }: { children: React.ReactNode }) {
+  useSuppressBrowserView(true);
+  return <>{children}</>;
 }

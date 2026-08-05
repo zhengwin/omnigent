@@ -1,5 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Dialog, DialogContent, DialogTitle } from "./dialog";
 
@@ -20,7 +20,18 @@ function setIOS(on: boolean): void {
 afterEach(() => {
   cleanup();
   setIOS(false);
+  delete (window as unknown as Record<string, unknown>).omnigentDesktop;
 });
+
+function installBrowserBridge() {
+  const browserSetOverlaySuppressed = vi.fn().mockResolvedValue({ ok: true });
+  (window as unknown as Record<string, unknown>).omnigentDesktop = {
+    kind: "electron",
+    browserOpenOrNavigate: vi.fn(),
+    browserSetOverlaySuppressed,
+  };
+  return browserSetOverlaySuppressed;
+}
 
 function renderDialog() {
   return render(
@@ -48,5 +59,92 @@ describe("DialogContent keyboard-aware sizing", () => {
     const content = screen.getByRole("dialog");
     expect(content.style.maxHeight).toBe("");
     expect(content.style.top).toBe("");
+  });
+});
+
+describe("DialogContent browser view suppression", () => {
+  it("suppresses the native browser for the dialog's mounted lifecycle", () => {
+    const suppress = installBrowserBridge();
+    const { rerender } = render(
+      <Dialog open={false} onOpenChange={() => {}}>
+        <DialogContent>
+          <DialogTitle>Test dialog</DialogTitle>
+        </DialogContent>
+      </Dialog>,
+    );
+    expect(suppress).not.toHaveBeenCalled();
+
+    rerender(
+      <Dialog open onOpenChange={() => {}}>
+        <DialogContent>
+          <DialogTitle>Test dialog</DialogTitle>
+        </DialogContent>
+      </Dialog>,
+    );
+    expect(suppress).toHaveBeenCalledTimes(1);
+    expect(suppress).toHaveBeenLastCalledWith(true);
+
+    rerender(
+      <Dialog open={false} onOpenChange={() => {}}>
+        <DialogContent>
+          <DialogTitle>Test dialog</DialogTitle>
+        </DialogContent>
+      </Dialog>,
+    );
+    expect(suppress).toHaveBeenCalledTimes(2);
+    expect(suppress).toHaveBeenLastCalledWith(false);
+  });
+
+  it("does not restore the browser until the final overlapping dialog closes", () => {
+    const suppress = installBrowserBridge();
+    const { rerender } = render(
+      <>
+        <Dialog open onOpenChange={() => {}}>
+          <DialogContent>
+            <DialogTitle>First dialog</DialogTitle>
+          </DialogContent>
+        </Dialog>
+        <Dialog open onOpenChange={() => {}}>
+          <DialogContent>
+            <DialogTitle>Second dialog</DialogTitle>
+          </DialogContent>
+        </Dialog>
+      </>,
+    );
+    expect(suppress).toHaveBeenCalledTimes(1);
+    expect(suppress).toHaveBeenLastCalledWith(true);
+
+    rerender(
+      <>
+        <Dialog open={false} onOpenChange={() => {}}>
+          <DialogContent>
+            <DialogTitle>First dialog</DialogTitle>
+          </DialogContent>
+        </Dialog>
+        <Dialog open onOpenChange={() => {}}>
+          <DialogContent>
+            <DialogTitle>Second dialog</DialogTitle>
+          </DialogContent>
+        </Dialog>
+      </>,
+    );
+    expect(suppress).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <>
+        <Dialog open={false} onOpenChange={() => {}}>
+          <DialogContent>
+            <DialogTitle>First dialog</DialogTitle>
+          </DialogContent>
+        </Dialog>
+        <Dialog open={false} onOpenChange={() => {}}>
+          <DialogContent>
+            <DialogTitle>Second dialog</DialogTitle>
+          </DialogContent>
+        </Dialog>
+      </>,
+    );
+    expect(suppress).toHaveBeenCalledTimes(2);
+    expect(suppress).toHaveBeenLastCalledWith(false);
   });
 });

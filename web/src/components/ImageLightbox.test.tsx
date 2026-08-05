@@ -14,6 +14,20 @@ import { ImageLightboxProvider, ZoomableImage } from "./ImageLightbox";
 
 afterEach(cleanup);
 
+function installBrowserBridge() {
+  const browserSetOverlaySuppressed = vi.fn().mockResolvedValue({ ok: true });
+  (window as unknown as Record<string, unknown>).omnigentDesktop = {
+    kind: "electron",
+    browserOpenOrNavigate: vi.fn(),
+    browserSetOverlaySuppressed,
+  };
+  return browserSetOverlaySuppressed;
+}
+
+afterEach(() => {
+  delete (window as unknown as Record<string, unknown>).omnigentDesktop;
+});
+
 function renderWithProvider() {
   return render(
     <ImageLightboxProvider>
@@ -60,6 +74,20 @@ describe("ZoomableImage + ImageLightboxProvider", () => {
     fireEvent.click(screen.getByRole("button", { name: "Zoom image: diagram" }));
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("suppresses the native browser for the full lightbox lifecycle", () => {
+    const suppress = installBrowserBridge();
+    renderWithProvider();
+    expect(suppress).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Zoom image: diagram" }));
+    expect(suppress).toHaveBeenCalledTimes(1);
+    expect(suppress).toHaveBeenLastCalledWith(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(suppress).toHaveBeenCalledTimes(2);
+    expect(suppress).toHaveBeenLastCalledWith(false);
   });
 
   it("zooms in and out via the toolbar, updating the scale and label", () => {

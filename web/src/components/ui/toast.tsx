@@ -12,6 +12,8 @@
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { XIcon } from "lucide-react";
 
+import { useSuppressBrowserView } from "@/hooks/useSuppressBrowserView";
+
 const TOAST_EVENT = "omnigent:toast";
 const DEFAULT_DURATION_MS = 6000;
 
@@ -38,6 +40,7 @@ export function showToast(content: ReactNode, opts?: { duration?: number }): voi
 /** Mount once near the app shell; renders the active toast stack. */
 export function Toaster() {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  useSuppressBrowserView(toasts.length > 0);
 
   const dismiss = useCallback((id: number) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
