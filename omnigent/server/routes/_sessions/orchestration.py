@@ -13,6 +13,7 @@ import json
 import secrets
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 import httpx
@@ -3232,6 +3233,97 @@ async def ensure_runner_connected(
             conv = await _reread()
 
     return runner_client, conv
+
+
+@dataclass(frozen=True)
+class _RetrySessionReadiness:
+    """Declarative result of reconciling a session for payload-free retry."""
+
+    recovered: bool
+    recovery: Literal[
+        "already_connected",
+        "native_terminal_ready",
+        "runner_relaunched",
+    ]
+
+
+async def _reconcile_retry_session_readiness(
+    *,
+    session_id: str,
+    app_state: Any,
+    conversation_store: ConversationStore,
+    runner_router: RunnerRouter | None,
+) -> _RetrySessionReadiness:
+    """Reconcile runner and native-terminal readiness without transcript input."""
+    from omnigent.server.routes import sessions as _facade
+
+    conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+    if conv is None:
+        raise _session_not_found()
+
+    original_runner_id = conv.runner_id
+    runner_client = await _facade._get_runner_client(session_id, runner_router)
+    runner_relaunched = False
+    terminal_ready_from_init = False
+    if runner_client is None:
+        runner_client, conv = await _facade.ensure_runner_connected(
+            session_id=session_id,
+            conv=conv,
+            app_state=app_state,
+            conversation_store=conversation_store,
+            runner_router=runner_router,
+            raise_host_refusal=True,
+        )
+        if runner_client is None:
+            raise OmnigentError(
+                "No runner is available to recover this session.",
+                code=ErrorCode.RUNNER_UNAVAILABLE,
+            )
+        runner_relaunched = conv.runner_id != original_runner_id
+        terminal_ready_from_init = await _facade._ensure_runner_session_initialized(
+            session_id,
+            conv,
+            runner_client,
+            conversation_store,
+            initializer=getattr(app_state, "runner_session_initializer", None),
+            suppress_recovery_turn=False,
+            require_success=True,
+        )
+
+    if _is_native_terminal_session(conv):
+        if not terminal_ready_from_init:
+            terminal_outcome = await _facade._ensure_native_terminal_ready(
+                runner_client,
+                session_id,
+                conv,
+                persist_resource_event=False,
+            )
+            if terminal_outcome.error is not None:
+                raise OmnigentError(
+                    terminal_outcome.error.message,
+                    code=ErrorCode.RUNNER_UNAVAILABLE,
+                )
+        await _facade._ensure_runner_relay_ready(
+            session_id,
+            conv.runner_id,
+            runner_client,
+            conversation_store,
+        )
+        return _RetrySessionReadiness(
+            recovered=True,
+            recovery="runner_relaunched" if runner_relaunched else "native_terminal_ready",
+        )
+
+    if runner_relaunched:
+        await _facade._ensure_runner_relay_ready(
+            session_id,
+            conv.runner_id,
+            runner_client,
+            conversation_store,
+        )
+        return _RetrySessionReadiness(recovered=True, recovery="runner_relaunched")
+
+    return _RetrySessionReadiness(recovered=False, recovery="already_connected")
 
 
 def _kick_managed_relaunch(
@@ -9242,6 +9334,7 @@ async def _get_session_snapshot(
 
 
 __all__ = [
+    "_RetrySessionReadiness",
     "_accumulate_session_usage",
     "_archive_stop",
     "_best_effort_stop",
@@ -9293,6 +9386,7 @@ __all__ = [
     "_publish_and_wait_for_harness_elicitation",
     "_publish_runner_recovered_status",
     "_publish_subtree_cost_to_ancestors",
+    "_reconcile_retry_session_readiness",
     "_recover_subagent_status_forward_via_parent",
     "_register_policy_elicitation",
     "_relay_runner_stream",

@@ -169,7 +169,6 @@ from omnigent.server.routes._sessions.orchestration import (
     _child_session_summaries_from_conversations,
     _dispatch_session_event_to_runner,
     _enrich_idle_status_with_subagent_output,
-    _ensure_native_terminal_ready,
     _ensure_runner_relay_ready,
     _ensure_runner_session_initialized,
     _evaluate_input_policy,
@@ -184,9 +183,10 @@ from omnigent.server.routes._sessions.orchestration import (
     _persist_external_session_usage,
     _persist_host_launch_failure_turn,
     _persist_native_terminal_failure,
+    _reconcile_retry_session_readiness,
     _resolve_elicitation,
+    _RetrySessionReadiness,
     _wait_for_host_bound_runner_client,
-    ensure_runner_connected,
 )
 from omnigent.server.schemas import (
     ConversationDeleted,
@@ -213,7 +213,7 @@ from omnigent.tools.client_specified import parse_client_side_tool_specs
 _retry_recovery_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
     weakref.WeakValueDictionary()
 )
-_retry_recovery_tasks: dict[str, asyncio.Task[dict[str, bool | str]]] = {}
+_retry_recovery_tasks: dict[str, asyncio.Task[_RetrySessionReadiness]] = {}
 
 
 def _retry_recovery_lock(session_id: str) -> asyncio.Lock:
@@ -227,7 +227,7 @@ def _retry_recovery_lock(session_id: str) -> asyncio.Lock:
 
 def _evict_retry_recovery_task(
     session_id: str,
-    completed_task: asyncio.Task[dict[str, bool | str]],
+    completed_task: asyncio.Task[_RetrySessionReadiness],
 ) -> None:
     """Evict a settled retry task without disturbing a newer attempt."""
     if _retry_recovery_tasks.get(session_id) is completed_task:
@@ -236,87 +236,9 @@ def _evict_retry_recovery_task(
         completed_task.exception()
 
 
-async def _recover_retry_session(
-    *,
-    request: Request,
-    session_id: str,
-    conversation_store: ConversationStore,
-    runner_router: RunnerRouter | None,
-) -> dict[str, bool | str]:
-    """Recover runner/terminal readiness without creating transcript input."""
-    conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
-    if conv is None:
-        raise _session_not_found()
-
-    original_runner_id = conv.runner_id
-    runner_client = await _get_runner_client(session_id, runner_router)
-    runner_relaunched = False
-    terminal_ready_from_init = False
-    if runner_client is None:
-        runner_client, conv = await ensure_runner_connected(
-            session_id=session_id,
-            conv=conv,
-            app_state=request.app.state,
-            conversation_store=conversation_store,
-            runner_router=runner_router,
-            raise_host_refusal=True,
-        )
-        if runner_client is None:
-            raise OmnigentError(
-                "No runner is available to recover this session.",
-                code=ErrorCode.RUNNER_UNAVAILABLE,
-            )
-        runner_relaunched = conv.runner_id != original_runner_id
-        terminal_ready_from_init = await _ensure_runner_session_initialized(
-            session_id,
-            conv,
-            runner_client,
-            conversation_store,
-            initializer=getattr(request.app.state, "runner_session_initializer", None),
-            suppress_recovery_turn=False,
-            require_success=True,
-        )
-
-    if _is_native_terminal_session(conv):
-        if not terminal_ready_from_init:
-            terminal_outcome = await _ensure_native_terminal_ready(
-                runner_client,
-                session_id,
-                conv,
-                persist_resource_event=False,
-            )
-            if terminal_outcome.error is not None:
-                raise OmnigentError(
-                    terminal_outcome.error.message,
-                    code=ErrorCode.RUNNER_UNAVAILABLE,
-                )
-        await _ensure_runner_relay_ready(
-            session_id,
-            conv.runner_id,
-            runner_client,
-            conversation_store,
-        )
-        return {
-            "queued": False,
-            "recovered": True,
-            "recovery": "runner_relaunched" if runner_relaunched else "native_terminal_ready",
-        }
-
-    if runner_relaunched:
-        await _ensure_runner_relay_ready(
-            session_id,
-            conv.runner_id,
-            runner_client,
-            conversation_store,
-        )
-        return {"queued": False, "recovered": True, "recovery": "runner_relaunched"}
-
-    return {"queued": False, "recovered": False, "recovery": "already_connected"}
-
-
 async def _retry_session_single_flight(
     *,
-    request: Request,
+    app_state: Any,
     session_id: str,
     conversation_store: ConversationStore,
     runner_router: RunnerRouter | None,
@@ -327,9 +249,9 @@ async def _retry_session_single_flight(
         task = _retry_recovery_tasks.get(session_id)
         if task is None:
             task = asyncio.create_task(
-                _recover_retry_session(
-                    request=request,
+                _reconcile_retry_session_readiness(
                     session_id=session_id,
+                    app_state=app_state,
                     conversation_store=conversation_store,
                     runner_router=runner_router,
                 )
@@ -338,7 +260,12 @@ async def _retry_session_single_flight(
             task.add_done_callback(
                 lambda completed_task: _evict_retry_recovery_task(session_id, completed_task)
             )
-    return await asyncio.shield(task)
+    outcome = await asyncio.shield(task)
+    return {
+        "queued": False,
+        "recovered": outcome.recovered,
+        "recovery": outcome.recovery,
+    }
 
 
 def register_events_routes(
@@ -559,7 +486,7 @@ def register_events_routes(
                 raise OmnigentError(str(exc), code=ErrorCode.INVALID_INPUT) from exc
         if body.type == _RETRY_SESSION_TYPE:
             return await _retry_session_single_flight(
-                request=request,
+                app_state=request.app.state,
                 session_id=session_id,
                 conversation_store=conversation_store,
                 runner_router=runner_router,

@@ -1994,7 +1994,6 @@ async def test_retry_session_relaunches_dead_runner_without_mutating_history(
     """Retry relaunches one dead runner and confirms its recovered lifecycle."""
     from omnigent.runtime import set_runner_client
     from omnigent.server.routes import sessions as sessions_module
-    from omnigent.server.routes.sessions import routes_events
 
     monkeypatch.setattr(sessions_module, "_HOST_BOUND_RUNNER_CONNECT_GRACE_S", 0.0)
     comm = await _connect_host(app)
@@ -2007,8 +2006,8 @@ async def test_retry_session_relaunches_dead_runner_without_mutating_history(
     initialize = AsyncMock(return_value=False)
     relay_ready = AsyncMock(return_value=None)
     monkeypatch.setattr(sessions_module, "_wait_for_runner_client", wait_for_runner_client)
-    monkeypatch.setattr(routes_events, "_ensure_runner_session_initialized", initialize)
-    monkeypatch.setattr(routes_events, "_ensure_runner_relay_ready", relay_ready)
+    monkeypatch.setattr(sessions_module, "_ensure_runner_session_initialized", initialize)
+    monkeypatch.setattr(sessions_module, "_ensure_runner_relay_ready", relay_ready)
 
     set_runner_client(None)
     responder = asyncio.create_task(_serve_one_launch(comm, launch_status="launched"))
@@ -2043,7 +2042,6 @@ async def test_retry_session_single_flight_launches_and_rotates_once(
     """Concurrent retries share one host launch and one binding rotation."""
     from omnigent.runtime import set_runner_client
     from omnigent.server.routes import sessions as sessions_module
-    from omnigent.server.routes.sessions import routes_events
 
     monkeypatch.setattr(sessions_module, "_HOST_BOUND_RUNNER_CONNECT_GRACE_S", 0.0)
     comm = await _connect_host(app)
@@ -2059,12 +2057,12 @@ async def test_retry_session_single_flight_launches_and_rotates_once(
 
     monkeypatch.setattr(sessions_module, "_wait_for_runner_client", _runner_connects_after_launch)
     monkeypatch.setattr(
-        routes_events,
+        sessions_module,
         "_ensure_runner_session_initialized",
         AsyncMock(return_value=False),
     )
     monkeypatch.setattr(
-        routes_events,
+        sessions_module,
         "_ensure_runner_relay_ready",
         AsyncMock(return_value=None),
     )
@@ -2099,6 +2097,9 @@ async def test_retry_session_single_flight_evicts_after_only_waiter_cancelled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A settled recovery is not reused after its only waiter is cancelled."""
+    from types import SimpleNamespace
+
+    from omnigent.server.routes import sessions as sessions_module
     from omnigent.server.routes.sessions import routes_events
 
     session_id = "cancelled-retry-waiter"
@@ -2106,10 +2107,16 @@ async def test_retry_session_single_flight_evicts_after_only_waiter_cancelled(
     finish_first = asyncio.Event()
     first_settled = asyncio.Event()
     attempts = 0
-    first_result = {"queued": False, "recovered": True, "recovery": "first"}
-    second_result = {"queued": False, "recovered": True, "recovery": "second"}
+    first_result = sessions_module._RetrySessionReadiness(
+        recovered=True,
+        recovery="native_terminal_ready",
+    )
+    second_result = sessions_module._RetrySessionReadiness(
+        recovered=False,
+        recovery="already_connected",
+    )
 
-    async def _recover(**kwargs: Any) -> dict[str, bool | str]:
+    async def _recover(**kwargs: Any) -> sessions_module._RetrySessionReadiness:
         nonlocal attempts
         del kwargs
         attempts += 1
@@ -2120,12 +2127,13 @@ async def test_retry_session_single_flight_evicts_after_only_waiter_cancelled(
             return first_result
         return second_result
 
-    monkeypatch.setattr(routes_events, "_recover_retry_session", _recover)
+    monkeypatch.setattr(routes_events, "_reconcile_retry_session_readiness", _recover)
     routes_events._retry_recovery_tasks.pop(session_id, None)
+    app_state = SimpleNamespace()
 
     waiter = asyncio.create_task(
         routes_events._retry_session_single_flight(
-            request=None,
+            app_state=app_state,
             session_id=session_id,
             conversation_store=None,
             runner_router=None,
@@ -2144,15 +2152,16 @@ async def test_retry_session_single_flight_evicts_after_only_waiter_cancelled(
         await asyncio.sleep(0)
 
     assert session_id not in routes_events._retry_recovery_tasks
-    assert (
-        await routes_events._retry_session_single_flight(
-            request=None,
-            session_id=session_id,
-            conversation_store=None,
-            runner_router=None,
-        )
-        == second_result
-    )
+    assert await routes_events._retry_session_single_flight(
+        app_state=app_state,
+        session_id=session_id,
+        conversation_store=None,
+        runner_router=None,
+    ) == {
+        "queued": False,
+        "recovered": second_result.recovered,
+        "recovery": second_result.recovery,
+    }
     assert attempts == 2
 
 

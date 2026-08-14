@@ -7321,7 +7321,7 @@ async def test_retry_session_reports_live_runner_noop_without_mutating_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A live non-native runner is not falsely reported as recovered."""
-    from omnigent.server.routes.sessions import routes_events
+    from omnigent.server.routes import sessions as sessions_module
 
     agent = await create_test_agent(client)
     session = await _create_session(client, agent["id"], initial_message="Keep this once")
@@ -7329,7 +7329,7 @@ async def test_retry_session_reports_live_runner_noop_without_mutating_history(
     before_items = before.json()["items"]
     runner_client = object()
     get_runner = AsyncMock(return_value=runner_client)
-    monkeypatch.setattr(routes_events, "_get_runner_client", get_runner)
+    monkeypatch.setattr(sessions_module, "_get_runner_client", get_runner)
 
     response = await client.post(
         f"/v1/sessions/{session['id']}/events",
@@ -7352,7 +7352,7 @@ async def test_retry_session_ensures_dead_required_native_terminal_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A live runner still recreates its required native terminal."""
-    from omnigent.server.routes.sessions import routes_events
+    from omnigent.server.routes import sessions as sessions_module
 
     agent = await create_test_agent(
         client,
@@ -7364,9 +7364,13 @@ async def test_retry_session_ensures_dead_required_native_terminal_once(
     runner_client = object()
     ensure_terminal = AsyncMock(return_value=_NativeTerminalEnsureOutcome(error=None))
     relay_ready = AsyncMock(return_value=None)
-    monkeypatch.setattr(routes_events, "_get_runner_client", AsyncMock(return_value=runner_client))
-    monkeypatch.setattr(routes_events, "_ensure_native_terminal_ready", ensure_terminal)
-    monkeypatch.setattr(routes_events, "_ensure_runner_relay_ready", relay_ready)
+    monkeypatch.setattr(
+        sessions_module,
+        "_get_runner_client",
+        AsyncMock(return_value=runner_client),
+    )
+    monkeypatch.setattr(sessions_module, "_ensure_native_terminal_ready", ensure_terminal)
+    monkeypatch.setattr(sessions_module, "_ensure_runner_relay_ready", relay_ready)
 
     response = await client.post(
         f"/v1/sessions/{session['id']}/events",
