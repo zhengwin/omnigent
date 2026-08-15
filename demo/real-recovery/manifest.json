@@ -1,15 +1,51 @@
 {
   "captured_on": "Saturday, August 15, 2026",
   "source_branch": "OMNI-3247-in-chat-error-patterns",
-  "source_head": "ff3e460c96ef7ab33703bc3ae70267248511ec99",
+  "source_head": "57c4953e8bf3eef91f0d0e3877e6677c3e26739a",
   "capture_method": "External cached-Playwright Chromium against the real Omnigent server, host, and Vite stack.",
   "sanitization": "Crop-only publication images; no overlays, redactions, resizing, or fabricated pixels.",
   "recovery_proof": {
     "harness": "codex-native",
     "model": "gpt-5.6-sol",
+    "session_id": "6d141a13ec954e5a995fbdf6cc4ad9cc",
     "persisted_runner_failure": true,
+    "persisted_error": {
+      "code": "runner_disconnected",
+      "message": "Runner disconnected unexpectedly."
+    },
+    "runner_before": {
+      "pid": 1011171,
+      "terminated_with": "SIGTERM",
+      "sigterm_requested_at": "2026-08-15T04:11:48.266230+00:00",
+      "exited_at": "2026-08-15T04:11:49.266952+00:00"
+    },
+    "retry": {
+      "clicked_at": "2026-08-15T04:11:58.532800+00:00",
+      "active_state": "Centered neutral Reconnecting pill",
+      "destructive_banner_present": false,
+      "retry_action_present": false,
+      "dismiss_action_present": false,
+      "diagnostics_present": false
+    },
+    "controlled_capture_pause": {
+      "process": "isolated host",
+      "pid": 942470,
+      "pause_signal": "SIGSTOP",
+      "resume_signal": "SIGCONT",
+      "started_at": "2026-08-15T04:11:58.532768+00:00",
+      "ended_at": "2026-08-15T04:12:00.279932+00:00",
+      "duration_seconds": 1.747164,
+      "purpose": "Held the transient reconnecting UI long enough for deterministic screenshots; recovery resumed immediately afterward."
+    },
+    "runner_after": {
+      "pid": 1016162,
+      "started_at": "2026-08-15T04:12:00.335740+00:00",
+      "different_pid": true,
+      "runner_binding_changed": true
+    },
     "replacement_runner_verified": true,
     "same_conversation_continued": true,
+    "final_session_status": "idle",
     "history_markers": [
       "BASELINE_OK",
       "RECOVERY_OK"
@@ -54,12 +90,12 @@
     },
     {
       "name": "05-real-runner-reconnecting.png",
-      "story": "Active real recovery request showing aligned Reconnecting status.",
+      "story": "Active real recovery fully replaces the destructive banner with a centered neutral Reconnecting pill.",
       "dimensions": [
         602,
         380
       ],
-      "sha256": "8b1f10c2aa11393c01a301f8b8a2101aab3e82436e75921e85a7f7ae9e001d08"
+      "sha256": "e91c889f74fb238d1ca9427f899a30799bb86e74370a25f8f83efd0be4b3f9dc"
     },
     {
       "name": "06-real-recovery-history-preserved.png",
