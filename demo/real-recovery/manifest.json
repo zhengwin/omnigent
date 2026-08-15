@@ -1,0 +1,83 @@
+{
+  "captured_on": "Saturday, August 15, 2026",
+  "source_branch": "OMNI-3247-in-chat-error-patterns",
+  "source_head": "ff3e460c96ef7ab33703bc3ae70267248511ec99",
+  "capture_method": "External cached-Playwright Chromium against the real Omnigent server, host, and Vite stack.",
+  "sanitization": "Crop-only publication images; no overlays, redactions, resizing, or fabricated pixels.",
+  "recovery_proof": {
+    "harness": "codex-native",
+    "model": "gpt-5.6-sol",
+    "persisted_runner_failure": true,
+    "replacement_runner_verified": true,
+    "same_conversation_continued": true,
+    "history_markers": [
+      "BASELINE_OK",
+      "RECOVERY_OK"
+    ]
+  },
+  "files": [
+    {
+      "name": "01-collapsed-resting.png",
+      "story": "Collapsed resting banner with destructive status icon.",
+      "dimensions": [
+        459,
+        69
+      ],
+      "sha256": "6b54c9b67f5b8341491f4aa4d7af5e3da652cd9a549e0007eaa2ed749a31a2bf"
+    },
+    {
+      "name": "02-keyboard-focus-right-chevron.png",
+      "story": "Collapsed keyboard-focus state with right-chevron replacement.",
+      "dimensions": [
+        459,
+        69
+      ],
+      "sha256": "ca361e079efaee3daacf67a0faf9a19c3a4bf3d031b8f926a760a8cdfce9b91d"
+    },
+    {
+      "name": "03-expanded-terminal-diagnostics.png",
+      "story": "Expanded down-chevron state with Message copy alignment and Terminal diagnostics.",
+      "dimensions": [
+        459,
+        630
+      ],
+      "sha256": "4c74fb0ae4dab887b11d58149be00a560588692ccf65cd14c21b8a935bb90ca5"
+    },
+    {
+      "name": "04-real-runner-disconnected-retry.png",
+      "story": "Persisted real Codex-native runner disconnect with Retry.",
+      "dimensions": [
+        602,
+        380
+      ],
+      "sha256": "d96727381ab0a54c53ef5e06e6a9b23022d9b7794e7566f6d3a8f6919251197d"
+    },
+    {
+      "name": "05-real-runner-reconnecting.png",
+      "story": "Active real recovery request showing aligned Reconnecting status.",
+      "dimensions": [
+        602,
+        380
+      ],
+      "sha256": "8b1f10c2aa11393c01a301f8b8a2101aab3e82436e75921e85a7f7ae9e001d08"
+    },
+    {
+      "name": "06-real-recovery-history-preserved.png",
+      "story": "Same conversation after replacement runner, preserving BASELINE_OK and completing RECOVERY_OK.",
+      "dimensions": [
+        602,
+        380
+      ],
+      "sha256": "690c8632e465a37d7dce9e7ee39aabfa29d3839dbbb1aa00661b9b080afd3941"
+    },
+    {
+      "name": "07-real-recovery-dark.png",
+      "story": "Recovered same-conversation history in dark theme.",
+      "dimensions": [
+        602,
+        380
+      ],
+      "sha256": "f780cefd50e94ec89301ab57c10d473d6c28e12d432f0850599ae47e66569636"
+    }
+  ]
+}
