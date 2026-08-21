@@ -20,6 +20,7 @@ import { defaultRemarkPlugins } from "streamdown";
 import remarkBreaks from "remark-breaks";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { ZoomableImage } from "@/components/ImageLightbox";
+import { useManagedArtifacts } from "@/hooks/useManagedArtifacts";
 import { useThrottledValue } from "@/hooks/useThrottledValue";
 import type { RenderItem } from "@/lib/renderItems";
 import type { SessionStatus } from "@/lib/types";
@@ -30,9 +31,14 @@ import {
   useIsChangedPath,
   useWorkspacePaths,
 } from "@/shell/FileViewerContext";
+import { useArtifactViewer } from "@/shell/ArtifactViewerContext";
 import { toWorkspaceRelativePath, useWorkspaceFileExists } from "@/hooks/useWorkspaceChangedFiles";
 import { ElicitationCard } from "./ApprovalCard";
-import { DesignArtifactCard, parseDesignArtifactResult } from "./DesignArtifactCard";
+import {
+  DesignArtifactCard,
+  normalizeArtifactEntryPath,
+  parseDesignArtifactResult,
+} from "./DesignArtifactCard";
 import { ReasoningView } from "./ReasoningView";
 import { SlashCommandCard } from "./SlashCommandCard";
 import { SmartRoutingCard } from "./SmartRoutingCard";
@@ -69,15 +75,24 @@ function WorkspacePathInlineCode({
   ...codeProps
 }: React.ComponentPropsWithoutRef<"code">) {
   const openFile = useFileViewer();
+  const openArtifact = useArtifactViewer();
   const isChangedPath = useIsChangedPath();
   const conversationId = useFileViewerConversationId();
   const { root, home } = useWorkspacePaths();
   const text = typeof codeChildren === "string" ? codeChildren : "";
+  const artifactEntryPath = normalizeArtifactEntryPath(text);
+  const managedArtifacts = useManagedArtifacts(artifactEntryPath ? conversationId : undefined);
+  const isManagedArtifact =
+    artifactEntryPath !== null &&
+    managedArtifacts.data?.some(
+      (file) => file.type === "file" && file.path === artifactEntryPath,
+    ) === true;
 
   // Collapse absolute / "~"-relative forms onto a workspace-relative path so
   // they match the changed-files list and the filesystem API. null = absolute
   // or "~" path outside the workspace (or the root itself) → never a link.
-  const linkPath = text ? toWorkspaceRelativePath(text, root, home) : null;
+  const linkPath =
+    artifactEntryPath === null && text ? toWorkspaceRelativePath(text, root, home) : null;
   // "Trusted" means we resolved an absolute/"~" form against the root, so the
   // result is known workspace-relative even if it's a bare basename (no
   // interior slash) that the existence check's path-shape heuristic rejects.
@@ -91,6 +106,30 @@ function WorkspacePathInlineCode({
     openFile && linkPath && !isChanged ? linkPath : null,
     trusted,
   );
+
+  if (openArtifact && artifactEntryPath && isManagedArtifact) {
+    return (
+      <code
+        role="button"
+        tabIndex={0}
+        data-streamdown="inline-code"
+        className={cn(
+          "rounded-sm font-mono text-sm underline decoration-dotted underline-offset-2 hover:text-foreground transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          className,
+        )}
+        onClick={() => openArtifact(artifactEntryPath)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openArtifact(artifactEntryPath);
+          }
+        }}
+        {...codeProps}
+      >
+        {codeChildren}
+      </code>
+    );
+  }
 
   if (openFile && linkPath && (isChanged || existsOnDisk)) {
     // Rendered as an inline <code> (not a <button>): a button is laid out as
