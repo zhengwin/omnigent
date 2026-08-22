@@ -98,6 +98,28 @@ describe("artifact entry tags", () => {
     expect(openArtifact).toHaveBeenNthCalledWith(2, "artifacts/revenue/index.html");
   });
 
+  it("leaves artifact-shaped code inside a Markdown link governed by the outer link", async () => {
+    renderMessage("[open `artifacts/overview.html`](https://example.com)");
+
+    const link = await screen.findByRole("link", { name: /open artifacts\/overview\.html/ });
+    const nestedCode = screen.getByText("artifacts/overview.html", { selector: "code" });
+    const linkClick = vi.fn();
+    link.addEventListener("click", linkClick);
+
+    expect(link).toHaveAttribute("href", "https://example.com/");
+    expect(link).toContainElement(nestedCode);
+    expect(nestedCode).not.toHaveAttribute("role", "button");
+    expect(nestedCode).not.toHaveAttribute("tabindex");
+
+    fireEvent.click(nestedCode);
+    fireEvent.keyDown(nestedCode, { key: "Enter" });
+    fireEvent.keyDown(nestedCode, { key: " " });
+
+    expect(linkClick).toHaveBeenCalledTimes(1);
+    expect(openArtifact).not.toHaveBeenCalled();
+    expect(openFile).not.toHaveBeenCalled();
+  });
+
   it("selects the artifact tag that was activated when several are displayed", async () => {
     renderMessage("Compare `artifacts/revenue/index.html` with `artifacts/overview.html`.");
 

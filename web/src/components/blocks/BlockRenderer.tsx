@@ -14,7 +14,7 @@
 // durable routing/fan-out cards.
 
 import type { ReactNode } from "react";
-import { useMemo } from "react";
+import { createContext, useContext, useMemo } from "react";
 import type React from "react";
 import { defaultRemarkPlugins } from "streamdown";
 import remarkBreaks from "remark-breaks";
@@ -69,13 +69,29 @@ import { ToolCard, ToolGroupSummary } from "./ToolCard";
  * it may call hooks: the existence query re-renders this span when it settles,
  * independent of whether `MessageResponse` re-renders its parent.
  */
+const MarkdownLinkContext = createContext(false);
+
+type MarkdownComponentProps<Tag extends "a" | "code"> = React.ComponentPropsWithoutRef<Tag> & {
+  node?: unknown;
+};
+
+function MarkdownLink({ children, node: _node, ...linkProps }: MarkdownComponentProps<"a">) {
+  return (
+    <MarkdownLinkContext.Provider value>
+      <a {...linkProps}>{children}</a>
+    </MarkdownLinkContext.Provider>
+  );
+}
+
 function WorkspacePathInlineCode({
   children: codeChildren,
   className,
+  node: _node,
   ...codeProps
-}: React.ComponentPropsWithoutRef<"code">) {
+}: MarkdownComponentProps<"code">) {
   const openFile = useFileViewer();
   const openArtifact = useArtifactViewer();
+  const isInsideMarkdownLink = useContext(MarkdownLinkContext);
   const isChangedPath = useIsChangedPath();
   const conversationId = useFileViewerConversationId();
   const { root, home } = useWorkspacePaths();
@@ -107,7 +123,7 @@ function WorkspacePathInlineCode({
     trusted,
   );
 
-  if (openArtifact && artifactEntryPath && isManagedArtifact) {
+  if (openArtifact && artifactEntryPath && isManagedArtifact && !isInsideMarkdownLink) {
     return (
       <code
         role="button"
@@ -186,6 +202,7 @@ function ZoomableMarkdownImage({ src, alt, ...props }: React.ComponentProps<"img
 // Stable module-level override map so MessageResponse's memo (which ignores
 // `components` changes) never sees a new identity.
 const FILE_PATH_AWARE_COMPONENTS = {
+  a: MarkdownLink,
   inlineCode: WorkspacePathInlineCode,
   img: ZoomableMarkdownImage,
 };
