@@ -98,6 +98,20 @@ describe("artifact entry tags", () => {
     expect(openArtifact).toHaveBeenNthCalledWith(2, "artifacts/revenue/index.html");
   });
 
+  it("shows a solid underline only on hover or keyboard focus", async () => {
+    renderMessage("Review `artifacts/revenue/index.html`.");
+    const tag = await screen.findByRole("button", {
+      name: "artifacts/revenue/index.html",
+    });
+
+    expect(tag).toHaveClass("no-underline");
+    expect(tag).toHaveClass("decoration-solid");
+    expect(tag).toHaveClass("hover:underline");
+    expect(tag).toHaveClass("focus-visible:underline");
+    expect(tag).not.toHaveClass("underline");
+    expect(tag).not.toHaveClass("decoration-dotted");
+  });
+
   it("leaves artifact-shaped code inside a Markdown link governed by the outer link", async () => {
     renderMessage("[open `artifacts/overview.html`](https://example.com)");
 
@@ -108,8 +122,15 @@ describe("artifact entry tags", () => {
 
     expect(link).toHaveAttribute("href", "https://example.com/");
     expect(link).toContainElement(nestedCode);
+    expect(link).toHaveClass("group");
     expect(nestedCode).not.toHaveAttribute("role", "button");
     expect(nestedCode).not.toHaveAttribute("tabindex");
+    expect(nestedCode).toHaveClass("no-underline");
+    expect(nestedCode).toHaveClass("decoration-solid");
+    expect(nestedCode).toHaveClass("group-hover:underline");
+    expect(nestedCode).toHaveClass("group-focus-visible:underline");
+    expect(nestedCode).not.toHaveClass("underline");
+    expect(nestedCode).not.toHaveClass("decoration-dotted");
 
     fireEvent.click(nestedCode);
     fireEvent.keyDown(nestedCode, { key: "Enter" });

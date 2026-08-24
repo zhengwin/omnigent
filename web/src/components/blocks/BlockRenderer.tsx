@@ -75,10 +75,17 @@ type MarkdownComponentProps<Tag extends "a" | "code"> = React.ComponentPropsWith
   node?: unknown;
 };
 
-function MarkdownLink({ children, node: _node, ...linkProps }: MarkdownComponentProps<"a">) {
+function MarkdownLink({
+  children,
+  className,
+  node: _node,
+  ...linkProps
+}: MarkdownComponentProps<"a">) {
   return (
     <MarkdownLinkContext.Provider value>
-      <a {...linkProps}>{children}</a>
+      <a {...linkProps} className={cn("group", className)}>
+        {children}
+      </a>
     </MarkdownLinkContext.Provider>
   );
 }
@@ -130,7 +137,7 @@ function WorkspacePathInlineCode({
         tabIndex={0}
         data-streamdown="inline-code"
         className={cn(
-          "rounded-sm font-mono text-sm underline decoration-dotted underline-offset-2 hover:text-foreground transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "rounded-sm font-mono text-sm no-underline decoration-solid underline-offset-2 hover:underline hover:text-foreground focus-visible:underline transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           className,
         )}
         onClick={() => openArtifact(artifactEntryPath)}
@@ -182,7 +189,14 @@ function WorkspacePathInlineCode({
   // looks unchanged.
   return (
     <code
-      className={cn("rounded bg-muted px-1.5 py-0.5 font-mono text-sm", className)}
+      className={cn(
+        "rounded bg-muted px-1.5 py-0.5 font-mono text-sm",
+        isInsideMarkdownLink &&
+          artifactEntryPath &&
+          isManagedArtifact &&
+          "no-underline decoration-solid underline-offset-2 group-hover:underline group-focus-visible:underline",
+        className,
+      )}
       data-streamdown="inline-code"
       {...codeProps}
     >
