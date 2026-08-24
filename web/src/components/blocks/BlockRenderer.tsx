@@ -14,12 +14,13 @@
 // durable routing/fan-out cards.
 
 import type { ReactNode } from "react";
-import { useMemo } from "react";
+import { createContext, useContext, useMemo } from "react";
 import type React from "react";
 import { defaultRemarkPlugins } from "streamdown";
 import remarkBreaks from "remark-breaks";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { ZoomableImage } from "@/components/ImageLightbox";
+import { useManagedArtifacts } from "@/hooks/useManagedArtifacts";
 import { useThrottledValue } from "@/hooks/useThrottledValue";
 import type { RenderItem } from "@/lib/renderItems";
 import type { SessionStatus } from "@/lib/types";
@@ -30,9 +31,14 @@ import {
   useIsChangedPath,
   useWorkspacePaths,
 } from "@/shell/FileViewerContext";
+import { useArtifactViewer } from "@/shell/ArtifactViewerContext";
 import { toWorkspaceRelativePath, useWorkspaceFileExists } from "@/hooks/useWorkspaceChangedFiles";
 import { ElicitationCard } from "./ApprovalCard";
-import { DesignArtifactCard, parseDesignArtifactResult } from "./DesignArtifactCard";
+import {
+  DesignArtifactCard,
+  normalizeArtifactEntryPath,
+  parseDesignArtifactResult,
+} from "./DesignArtifactCard";
 import { ReasoningView } from "./ReasoningView";
 import { SlashCommandCard } from "./SlashCommandCard";
 import { SmartRoutingCard } from "./SmartRoutingCard";
@@ -63,21 +69,53 @@ import { ToolCard, ToolGroupSummary } from "./ToolCard";
  * it may call hooks: the existence query re-renders this span when it settles,
  * independent of whether `MessageResponse` re-renders its parent.
  */
+const MarkdownLinkContext = createContext(false);
+
+type MarkdownComponentProps<Tag extends "a" | "code"> = React.ComponentPropsWithoutRef<Tag> & {
+  node?: unknown;
+};
+
+function MarkdownLink({
+  children,
+  className,
+  node: _node,
+  ...linkProps
+}: MarkdownComponentProps<"a">) {
+  return (
+    <MarkdownLinkContext.Provider value>
+      <a {...linkProps} className={cn("group/artifact-link", className)}>
+        {children}
+      </a>
+    </MarkdownLinkContext.Provider>
+  );
+}
+
 function WorkspacePathInlineCode({
   children: codeChildren,
   className,
+  node: _node,
   ...codeProps
-}: React.ComponentPropsWithoutRef<"code">) {
+}: MarkdownComponentProps<"code">) {
   const openFile = useFileViewer();
+  const openArtifact = useArtifactViewer();
+  const isInsideMarkdownLink = useContext(MarkdownLinkContext);
   const isChangedPath = useIsChangedPath();
   const conversationId = useFileViewerConversationId();
   const { root, home } = useWorkspacePaths();
   const text = typeof codeChildren === "string" ? codeChildren : "";
+  const artifactEntryPath = normalizeArtifactEntryPath(text);
+  const managedArtifacts = useManagedArtifacts(artifactEntryPath ? conversationId : undefined);
+  const isManagedArtifact =
+    artifactEntryPath !== null &&
+    managedArtifacts.data?.some(
+      (file) => file.type === "file" && file.path === artifactEntryPath,
+    ) === true;
 
   // Collapse absolute / "~"-relative forms onto a workspace-relative path so
   // they match the changed-files list and the filesystem API. null = absolute
   // or "~" path outside the workspace (or the root itself) → never a link.
-  const linkPath = text ? toWorkspaceRelativePath(text, root, home) : null;
+  const linkPath =
+    artifactEntryPath === null && text ? toWorkspaceRelativePath(text, root, home) : null;
   // "Trusted" means we resolved an absolute/"~" form against the root, so the
   // result is known workspace-relative even if it's a bare basename (no
   // interior slash) that the existence check's path-shape heuristic rejects.
@@ -91,6 +129,30 @@ function WorkspacePathInlineCode({
     openFile && linkPath && !isChanged ? linkPath : null,
     trusted,
   );
+
+  if (openArtifact && artifactEntryPath && isManagedArtifact && !isInsideMarkdownLink) {
+    return (
+      <code
+        role="button"
+        tabIndex={0}
+        data-streamdown="inline-code"
+        className={cn(
+          "rounded-sm font-mono text-sm no-underline decoration-solid underline-offset-2 hover:underline hover:text-foreground focus-visible:underline transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          className,
+        )}
+        onClick={() => openArtifact(artifactEntryPath)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openArtifact(artifactEntryPath);
+          }
+        }}
+        {...codeProps}
+      >
+        {codeChildren}
+      </code>
+    );
+  }
 
   if (openFile && linkPath && (isChanged || existsOnDisk)) {
     // Rendered as an inline <code> (not a <button>): a button is laid out as
@@ -127,7 +189,14 @@ function WorkspacePathInlineCode({
   // looks unchanged.
   return (
     <code
-      className={cn("rounded bg-muted px-1.5 py-0.5 font-mono text-sm", className)}
+      className={cn(
+        "rounded bg-muted px-1.5 py-0.5 font-mono text-sm",
+        isInsideMarkdownLink &&
+          artifactEntryPath &&
+          isManagedArtifact &&
+          "no-underline decoration-solid underline-offset-2 group-hover/artifact-link:underline group-focus-visible/artifact-link:underline",
+        className,
+      )}
       data-streamdown="inline-code"
       {...codeProps}
     >
@@ -147,6 +216,7 @@ function ZoomableMarkdownImage({ src, alt, ...props }: React.ComponentProps<"img
 // Stable module-level override map so MessageResponse's memo (which ignores
 // `components` changes) never sees a new identity.
 const FILE_PATH_AWARE_COMPONENTS = {
+  a: MarkdownLink,
   inlineCode: WorkspacePathInlineCode,
   img: ZoomableMarkdownImage,
 };

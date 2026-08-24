@@ -15,7 +15,7 @@ export interface DesignArtifactData {
   summary?: string;
 }
 
-function normalizedArtifactEntryPath(value: unknown): string | null {
+export function normalizeArtifactEntryPath(value: unknown): string | null {
   if (typeof value !== "string" || value.length === 0 || value.includes("\\")) return null;
   const parts = value.split("/");
   const isStandalone = parts.length === 2 && parts[1]?.toLowerCase().endsWith(".html");
@@ -39,7 +39,7 @@ export function parseDesignArtifactResult(
   args: Record<string, unknown>,
   output: string | null,
 ): DesignArtifactData | null {
-  const inputPath = normalizedArtifactEntryPath(args.entry_path);
+  const inputPath = normalizeArtifactEntryPath(args.entry_path);
   if (inputPath === null || output === null) return null;
 
   let raw: unknown;
@@ -51,7 +51,7 @@ export function parseDesignArtifactResult(
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
 
   const result = raw as Record<string, unknown>;
-  const entryPath = normalizedArtifactEntryPath(result.entry_path);
+  const entryPath = normalizeArtifactEntryPath(result.entry_path);
   const expectedRoot = normalizedArtifactRoot(inputPath);
   if (
     result.ok !== true ||
