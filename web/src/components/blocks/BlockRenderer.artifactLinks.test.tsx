@@ -45,18 +45,20 @@ const MANAGED_ARTIFACTS = [
   },
 ];
 
-function renderMessage(markdown: string) {
+function renderMessage(markdown: string, wrapperClassName?: string) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
-    <QueryClientProvider client={queryClient}>
-      <ArtifactViewerContext.Provider value={ARTIFACT_VIEWER_CONTEXT_VALUE}>
-        <FileViewerContext.Provider value={FILE_VIEWER_CONTEXT_VALUE}>
-          <FilePathAwareMessageResponse>{markdown}</FilePathAwareMessageResponse>
-        </FileViewerContext.Provider>
-      </ArtifactViewerContext.Provider>
-    </QueryClientProvider>,
+    <div className={wrapperClassName}>
+      <QueryClientProvider client={queryClient}>
+        <ArtifactViewerContext.Provider value={ARTIFACT_VIEWER_CONTEXT_VALUE}>
+          <FileViewerContext.Provider value={FILE_VIEWER_CONTEXT_VALUE}>
+            <FilePathAwareMessageResponse>{markdown}</FilePathAwareMessageResponse>
+          </FileViewerContext.Provider>
+        </ArtifactViewerContext.Provider>
+      </QueryClientProvider>
+    </div>,
   );
 }
 
@@ -113,7 +115,7 @@ describe("artifact entry tags", () => {
   });
 
   it("leaves artifact-shaped code inside a Markdown link governed by the outer link", async () => {
-    renderMessage("[open `artifacts/overview.html`](https://example.com)");
+    renderMessage("[open `artifacts/overview.html`](https://example.com)", "group");
 
     const link = await screen.findByRole("link", { name: /open artifacts\/overview\.html/ });
     const nestedCode = screen.getByText("artifacts/overview.html", { selector: "code" });
@@ -122,13 +124,16 @@ describe("artifact entry tags", () => {
 
     expect(link).toHaveAttribute("href", "https://example.com/");
     expect(link).toContainElement(nestedCode);
-    expect(link).toHaveClass("group");
+    expect(link).toHaveClass("group/artifact-link");
+    expect(link).not.toHaveClass("group");
     expect(nestedCode).not.toHaveAttribute("role", "button");
     expect(nestedCode).not.toHaveAttribute("tabindex");
     expect(nestedCode).toHaveClass("no-underline");
     expect(nestedCode).toHaveClass("decoration-solid");
-    expect(nestedCode).toHaveClass("group-hover:underline");
-    expect(nestedCode).toHaveClass("group-focus-visible:underline");
+    expect(nestedCode).toHaveClass("group-hover/artifact-link:underline");
+    expect(nestedCode).toHaveClass("group-focus-visible/artifact-link:underline");
+    expect(nestedCode).not.toHaveClass("group-hover:underline");
+    expect(nestedCode).not.toHaveClass("group-focus-visible:underline");
     expect(nestedCode).not.toHaveClass("underline");
     expect(nestedCode).not.toHaveClass("decoration-dotted");
 

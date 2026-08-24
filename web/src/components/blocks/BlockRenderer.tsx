@@ -83,7 +83,7 @@ function MarkdownLink({
 }: MarkdownComponentProps<"a">) {
   return (
     <MarkdownLinkContext.Provider value>
-      <a {...linkProps} className={cn("group", className)}>
+      <a {...linkProps} className={cn("group/artifact-link", className)}>
         {children}
       </a>
     </MarkdownLinkContext.Provider>
@@ -194,7 +194,7 @@ function WorkspacePathInlineCode({
         isInsideMarkdownLink &&
           artifactEntryPath &&
           isManagedArtifact &&
-          "no-underline decoration-solid underline-offset-2 group-hover:underline group-focus-visible:underline",
+          "no-underline decoration-solid underline-offset-2 group-hover/artifact-link:underline group-focus-visible/artifact-link:underline",
         className,
       )}
       data-streamdown="inline-code"
